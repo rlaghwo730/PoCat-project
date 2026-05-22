@@ -1,0 +1,12 @@
+langchain==0.3.27
+langchain-community==0.3.27
+langchain-openai==0.3.27
+langchain-upstage==0.7.2
+chromadb==0.6.0
+langchain-text-splitters==0.3.9
+tiktoken==0.7.0
+pypdf==4.3.1
+pymupdf==1.26.3
+pydantic==2.11.7
+streamlit>=1.35.0
+python-dotenv>=1.0.0
