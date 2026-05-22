@@ -113,6 +113,16 @@ class ContradictionDetector:
                 ),
             ))
 
+        # coverage_context 기반 추가 모순 탐지
+        ctx = data.coverage_context
+        if ctx is not None:
+            if ctx.exclusions:
+                violations.extend(
+                    self._check_exclusion_contradictions(data.content, ctx.exclusions, sections)
+                )
+            if ctx.mandatory_rider_yn:
+                violations.extend(self._check_mandatory_rider_contradiction(data.content))
+
         return violations
 
     # ------------------------------------------------------------------
@@ -162,6 +172,47 @@ class ContradictionDetector:
             return None
         except Exception:
             return _LLM_FAILED
+
+    def _check_exclusion_contradictions(
+        self, content: str, exclusions: list[str], sections: list[str]
+    ) -> list[Violation]:
+        """product_meta의 exclusions 항목이 보장 조항에 언급되면 모순으로 탐지."""
+        coverage_sections = [s for s in sections if _COVERAGE_KEYWORDS.search(s)]
+        violations: list[Violation] = []
+        for idx, excl_item in enumerate(exclusions):
+            for section in coverage_sections:
+                if excl_item in section:
+                    violations.append(Violation(
+                        violation_id=f"VIO_CON_EXC_{idx:03d}",
+                        type=ViolationType.CONTRADICTION,
+                        severity=Severity.CRITICAL,
+                        original_text=section[:100].replace("\n", " "),
+                        regulation="보험업 감독업무 시행세칙 제5-17조",
+                        reason=(
+                            f"'{excl_item}'은 면책 항목으로 지정되었으나 "
+                            "보장 조항에서 보장 대상으로 언급되고 있습니다."
+                        ),
+                    ))
+                    break
+        return violations
+
+    def _check_mandatory_rider_contradiction(self, content: str) -> list[Violation]:
+        """mandatory_rider_yn=True인데 약관에 '선택 가능' 표현이 있으면 모순."""
+        optional_pattern = re.compile(r"선택\s*(?:가능|특약|사항)|선택적\s*(?:가입|담보)")
+        match = optional_pattern.search(content)
+        if not match:
+            return []
+        return [Violation(
+            violation_id="VIO_CON_RIDER_001",
+            type=ViolationType.CONTRADICTION,
+            severity=Severity.HIGH,
+            original_text=match.group(),
+            regulation="보험업 감독업무 시행세칙 제5-17조",
+            reason=(
+                "상품 설계상 의무 가입(mandatory_rider_yn=True)이나 "
+                "약관에 '선택 가능' 표현이 존재하여 모순됩니다."
+            ),
+        )]
 
     def _build_violation(
         self, pair: _SectionPair, subject: str, reason: str

@@ -1,4 +1,5 @@
 from .violation import (
+    CoverageContext,
     DetectionInput,
     DetectionResult,
     SectionType,
@@ -15,6 +16,7 @@ from .compliance_report import (
 )
 
 __all__ = [
+    "CoverageContext",
     "DetectionInput",
     "DetectionResult",
     "SectionType",

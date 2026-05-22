@@ -44,6 +44,10 @@ class ComplianceAgent:
             session_key,
             input_data.section_type,
         )
+        if input_data.coverage_context is not None:
+            logger.info(
+                "coverage_context 주입됨 → missing_req/contradiction 동적 체크 활성화"
+            )
 
         detection_result = self._detector.detect(input_data)
         tracker.record(detection_result.violations)

@@ -135,12 +135,86 @@ class MissingReqDetector:
                 ),
             )]
 
+        # 기존 하드코딩 체크 (fallback, coverage_context 유무와 무관하게 항상 실행)
         required_items = _fetch_required_items(data.section_type)
         violations: list[Violation] = []
-
         for item in required_items:
             if not self._is_present(data.content, item.keywords):
                 violations.append(self._build_violation(item))
+
+        # coverage_context 기반 동적 체크
+        if data.coverage_context is not None:
+            violations.extend(self._dynamic_checks(data))
+
+        return violations
+
+    def _dynamic_checks(self, data: DetectionInput) -> list[Violation]:
+        """coverage_context 필드별 추가 필수항목 체크. VIO_MSR_005_XXX 형식."""
+        ctx = data.coverage_context
+        violations: list[Violation] = []
+        seq = 1
+
+        def _add(reason: str, severity: Severity = Severity.HIGH) -> None:
+            nonlocal seq
+            violations.append(Violation(
+                violation_id=f"VIO_MSR_005_{seq:03d}",
+                type=ViolationType.MISSING_REQUIREMENT,
+                severity=severity,
+                original_text="(해당 항목 없음)",
+                regulation="보험업 감독업무 시행세칙 제5-16조",
+                reason=reason,
+            ))
+            seq += 1
+
+        if ctx.deductible_required:
+            if not self._is_present(
+                data.content,
+                ["급여 자기부담금", "비급여 자기부담금", "3대비급여", "급여·비급여"],
+            ):
+                _add(
+                    "급여·비급여·3대비급여별 자기부담금 구분 명시가 필요합니다.",
+                    Severity.CRITICAL,
+                )
+
+        if ctx.three_major_noncovered_required:
+            for name, kws in [
+                ("도수치료·체외충격파·증식치료", ["도수치료", "체외충격파", "증식치료"]),
+                ("주사료", ["주사료", "주사치료"]),
+                ("MRI", ["MRI", "자기공명영상"]),
+            ]:
+                if not self._is_present(data.content, kws):
+                    _add(f"3대비급여 항목 '{name}' 명시가 필요합니다.")
+
+        if ctx.proportional_compensation:
+            if not self._is_present(data.content, ["비례보상", "비례 보상"]):
+                _add("비례보상 조항 명시가 필요합니다.")
+
+        if ctx.re_enrollment_condition_required:
+            if not self._is_present(data.content, ["재가입", "재가입 조건", "재계약"]):
+                _add("재가입 조건 명시가 필요합니다.")
+
+        if ctx.coverage_limit:
+            for category, limit in ctx.coverage_limit.items():
+                if not self._is_present(data.content, [f"{limit:,}", str(limit)]):
+                    _add(
+                        f"보장한도 '{category}: {limit:,}원'이 약관 본문에 명시되어야 합니다."
+                    )
+
+        if ctx.premium_change_reason_required:
+            change_reasons = {
+                "나이 증가": ["나이", "연령"],
+                "위험률 변동": ["위험률"],
+                "의료수가 변동": ["의료수가"],
+                "비급여 이용량": ["비급여 이용량"],
+            }
+            missing = [
+                name for name, kws in change_reasons.items()
+                if not self._is_present(data.content, kws)
+            ]
+            if missing:
+                _add(
+                    f"갱신형 보험료 변경 사유({', '.join(missing)}) 명시가 필요합니다."
+                )
 
         return violations
 

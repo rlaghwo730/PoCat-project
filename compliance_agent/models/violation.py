@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 
 class ViolationType(str, Enum):
@@ -37,12 +37,26 @@ class Violation:
 
 
 @dataclass
+class CoverageContext:
+    """product_meta에 포함되는 보장 컨텍스트 구조체. 모든 필드는 선택적."""
+    coverage_limit: Optional[dict] = None
+    deductible_required: Optional[bool] = None
+    three_major_noncovered_required: Optional[bool] = None
+    proportional_compensation: Optional[bool] = None
+    re_enrollment_condition_required: Optional[bool] = None
+    exclusions: Optional[list[str]] = None          # Rule 3: 면책 항목 목록
+    mandatory_rider_yn: Optional[bool] = None        # Rule 3: 의무 가입 여부
+    premium_change_reason_required: Optional[bool] = None  # Rule 5: 보험료 변경 사유 명시 필요
+
+
+@dataclass
 class DetectionInput:
     iteration: int
     section_type: str  # SectionType 값("약관", "상품설명서") 또는 SectionType enum
     content: str
     session_id: str = ""  # 동일 세션의 iteration을 추적하는 키
     product_meta: dict[str, Any] = field(default_factory=dict)
+    coverage_context: Optional[CoverageContext] = None
 
 
 @dataclass
