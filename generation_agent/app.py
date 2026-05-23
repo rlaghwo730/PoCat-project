@@ -19,7 +19,9 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner=False)
 def load_ui_config():
-    with open(Path("data/ui_config.json"), encoding="utf-8") as f:
+    BASE_DIR = Path(__file__).parent
+    with open(BASE_DIR / "data/ui_config.json", encoding="utf-8") as f:
+
         return json.load(f)
 
 
