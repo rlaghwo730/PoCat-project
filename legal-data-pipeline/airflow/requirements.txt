@@ -1,0 +1,14 @@
+pandas
+requests
+python-dotenv
+psycopg2-binary
+SQLAlchemy
+lxml
+beautifulsoup4
+pypdf
+python-docx
+olefile
+tqdm
+openpyxl
+chromadb
+sentence-transformers

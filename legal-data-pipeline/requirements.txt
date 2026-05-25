@@ -1,0 +1,7 @@
+psycopg2-binary
+sentence-transformers
+python-dotenv
+tqdm
+requests
+pandas
+openpyxl
