@@ -1,0 +1,7 @@
+.env
+.env.*
+*.backup
+silson_legal_cloud_dump.sql
+__pycache__/
+*.pyc
+data/vector_store/
