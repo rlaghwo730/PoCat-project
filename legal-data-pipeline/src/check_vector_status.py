@@ -1,71 +1,120 @@
-from pathlib import Path
+import os
+import psycopg2
+from dotenv import load_dotenv
 
-import chromadb
-from chromadb.config import Settings
-from sqlalchemy import text
-
-from db import get_engine
+load_dotenv()
 
 
-CHROMA_DIR = Path("data/vector_store/chroma")
-
-COLLECTIONS = [
-    "law_regulation_vectors",
-    "law_attachment_vectors",
-    "external_reference_vectors",
-]
-
-
-def check_db_status():
-    engine = get_engine()
-
-    queries = {
-        "embedding_status별 건수": """
-            SELECT embedding_status, COUNT(*)
-            FROM retrieval_chunk_registry
-            GROUP BY embedding_status
-            ORDER BY embedding_status;
-        """,
-        "vector_collection별 embedding 상태": """
-            SELECT
-                vector_collection,
-                embedding_status,
-                COUNT(*)
-            FROM retrieval_chunk_registry
-            GROUP BY vector_collection, embedding_status
-            ORDER BY vector_collection, embedding_status;
-        """,
-    }
-
-    with engine.connect() as conn:
-        for title, query in queries.items():
-            print("\n" + "=" * 100)
-            print(f"[{title}]")
-            rows = conn.execute(text(query)).fetchall()
-            for row in rows:
-                print(row)
-
-
-def check_chroma_status():
-    print("\n" + "=" * 100)
-    print("[Chroma collection 상태]")
-
-    client = chromadb.PersistentClient(
-        path=str(CHROMA_DIR),
-        settings=Settings(anonymized_telemetry=False),
+def get_conn():
+    return psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST"),
+        port=os.getenv("POSTGRES_PORT", "5432"),
+        dbname=os.getenv("POSTGRES_DB"),
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD"),
+        sslmode=os.getenv("POSTGRES_SSLMODE", "require"),
     )
-
-    for name in COLLECTIONS:
-        try:
-            collection = client.get_collection(name)
-            print(f"- {name}: {collection.count()}건")
-        except Exception as e:
-            print(f"- {name}: 없음 또는 오류 | {e}")
 
 
 def main():
-    check_db_status()
-    check_chroma_status()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    print("=" * 100)
+    print("[PGVECTOR STATUS]")
+    print("=" * 100)
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM unified_retrieval_chunk
+        WHERE is_active = TRUE;
+    """)
+    active_chunks = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM unified_chunk_embedding;
+    """)
+    embeddings = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM unified_chunk_embedding e
+        JOIN unified_retrieval_chunk r
+          ON e.unified_chunk_id = r.unified_chunk_id
+        WHERE r.is_active = TRUE;
+    """)
+    active_joined_embeddings = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM unified_chunk_embedding e
+        LEFT JOIN unified_retrieval_chunk r
+          ON e.unified_chunk_id = r.unified_chunk_id
+        WHERE r.unified_chunk_id IS NULL
+           OR r.is_active = FALSE;
+    """)
+    orphan_embeddings = cur.fetchone()[0]
+
+    print(f"active chunks             : {active_chunks}")
+    print(f"embeddings                : {embeddings}")
+    print(f"active joined embeddings  : {active_joined_embeddings}")
+    print(f"orphan embeddings         : {orphan_embeddings}")
+
+    print()
+    print("=" * 100)
+    print("[SOURCE DOMAIN STATUS]")
+    print("=" * 100)
+
+    cur.execute("""
+        SELECT source_domain, COUNT(*)
+        FROM unified_retrieval_chunk
+        WHERE is_active = TRUE
+        GROUP BY source_domain
+        ORDER BY source_domain;
+    """)
+    rows = cur.fetchall()
+
+    for source_domain, count in rows:
+        print(f"{source_domain}: {count}")
+
+    print()
+    print("=" * 100)
+    print("[SOURCE DOMAIN EMBEDDING STATUS]")
+    print("=" * 100)
+
+    cur.execute("""
+        SELECT
+            r.source_domain,
+            COUNT(*) AS embedding_count
+        FROM unified_chunk_embedding e
+        JOIN unified_retrieval_chunk r
+          ON e.unified_chunk_id = r.unified_chunk_id
+        WHERE r.is_active = TRUE
+        GROUP BY r.source_domain
+        ORDER BY r.source_domain;
+    """)
+    rows = cur.fetchall()
+
+    for source_domain, count in rows:
+        print(f"{source_domain}: {count}")
+
+    print()
+    print("=" * 100)
+    print("[VALIDATION RESULT]")
+    print("=" * 100)
+
+    if active_chunks == active_joined_embeddings and orphan_embeddings == 0:
+        print("[OK] pgvector embedding status is valid.")
+    else:
+        print("[WARN] pgvector embedding status needs review.")
+        if active_chunks != active_joined_embeddings:
+            print(f"- Missing active embeddings: {active_chunks - active_joined_embeddings}")
+        if orphan_embeddings > 0:
+            print(f"- Orphan embeddings: {orphan_embeddings}")
+
+    cur.close()
+    conn.close()
 
 
 if __name__ == "__main__":
