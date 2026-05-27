@@ -1,11 +1,11 @@
 psycopg2-binary
+sentence-transformers
 python-dotenv
-sqlalchemy
+tqdm
+requests
 pandas
 openpyxl
-requests
+sqlalchemy
 beautifulsoup4
 lxml
-sentence-transformers
-tqdm
 pgvector
