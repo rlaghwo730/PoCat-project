@@ -1,544 +1,276 @@
-\# Neon PostgreSQL 공유 DB 연결 가이드
+# DB Connection Guide
 
+## 1. 목적
 
+본 문서는 팀원이 실손의료보험 약관 검토 AI Agent 개발 과정에서 공유 DB에 직접 연결하여 법령·약관·외부 참고자료 기반 검색 데이터를 조회하기 위한 가이드이다.
 
-\## 1. 목적
+현재 DB 구조는 Neon PostgreSQL + pgvector 기반이다.
 
+ChromaDB는 현재 운영 구조에서 사용하지 않는다.
 
+---
 
-팀원은 로컬 DB, Docker, 데이터 적재 과정을 실행하지 않고  
-
-Neon PostgreSQL 공유 DB에 직접 연결해서 통합 법령·약관 데이터를 조회할 수 있습니다.
-
-
-
-이 DB는 읽기 전용 계정으로 공유됩니다.
-
-
-
-\---
-
-
-
-\## 2. DB 접속 정보
-
-
+## 2. DB 접속 정보
 
 ```text
-
 DB Type  : PostgreSQL
-
 Host     : ep-red-smoke-aol741au.c-2.ap-southeast-1.aws.neon.tech
-
 Port     : 5432
-
 Database : neondb
-
-User     : agent\_reader
-
-Password : AgentRead\_2026\_Strong!
-
+User     : agent_reader
+Password : AgentRead_2026_Strong!
 SSL mode : require
-
 ```
 
+`agent_reader`는 팀원 조회용 read-only 계정이다.
 
+---
 
-`agent\_reader`는 읽기 전용 계정입니다.
-
-
-
-가능한 작업:
-
-
-
-```text
-
-SELECT 조회
-
-```
-
-
-
-불가능한 작업:
-
-
-
-```text
-
-INSERT
-
-UPDATE
-
-DELETE
-
-CREATE TABLE
-
-DROP TABLE
-
-```
-
-
-
-\---
-
-
-
-\## 3. 필요한 패키지 설치
-
-
-
-Python 코드에서 DB에 연결하려면 아래 패키지를 설치합니다.
-
-
+## 3. 패키지 설치
 
 ```bash
-
 pip install psycopg2-binary
-
 ```
 
+프로젝트 전체 requirements를 설치하는 경우에는 아래 명령을 사용한다.
 
-
-\---
-
-
-
-\## 4. Python 코드에서 DB 연결
-
-
-
-프로젝트 코드 안에서 아래 함수를 사용하면 됩니다.
-
-
-
-```python
-
-import psycopg2
-
-
-
-
-
-def get\_connection():
-
-&#x20;   conn = psycopg2.connect(
-
-&#x20;       host="ep-red-smoke-aol741au.c-2.ap-southeast-1.aws.neon.tech",
-
-&#x20;       port=5432,
-
-&#x20;       dbname="neondb",
-
-&#x20;       user="agent\_reader",
-
-&#x20;       password="AgentRead\_2026\_Strong!",
-
-&#x20;       sslmode="require",
-
-&#x20;   )
-
-&#x20;   return conn
-
+```bash
+pip install -r requirements.txt
 ```
 
+---
 
-
-\---
-
-
-
-\## 5. 연결 확인 코드
-
-
-
-아래 코드를 실행해서 DB 연결 여부를 확인합니다.
-
-
+## 4. Python DB 연결 테스트
 
 ```python
-
 import psycopg2
-
-
-
-
 
 conn = psycopg2.connect(
-
-&#x20;   host="ep-red-smoke-aol741au.c-2.ap-southeast-1.aws.neon.tech",
-
-&#x20;   port=5432,
-
-&#x20;   dbname="neondb",
-
-&#x20;   user="agent\_reader",
-
-&#x20;   password="AgentRead\_2026\_Strong!",
-
-&#x20;   sslmode="require",
-
+    host="ep-red-smoke-aol741au.c-2.ap-southeast-1.aws.neon.tech",
+    port=5432,
+    dbname="neondb",
+    user="agent_reader",
+    password="AgentRead_2026_Strong!",
+    sslmode="require",
 )
 
+cur = conn.cursor()
+cur.execute("SELECT current_user, current_database();")
+print(cur.fetchone())
 
+cur.close()
+conn.close()
+```
+
+정상 출력 예시는 다음과 같다.
+
+```text
+('agent_reader', 'neondb')
+```
+
+---
+
+## 5. 주요 조회 테이블
+
+| 테이블/View | 설명 |
+|---|---|
+| agent_retrieval_view | Agent 조회용 통합 View |
+| unified_retrieval_chunk | 법령·약관·외부자료 본문 및 citation/source_url 저장 |
+| unified_chunk_embedding | pgvector embedding 저장 테이블 |
+| insurance_text_unit | 보험사 약관 구조화 데이터 |
+| legal_article | 법령 및 감독규정 조문 데이터 |
+| legal_attachment | 별표 및 첨부 기준 데이터 |
+
+---
+
+## 6. source_domain 설명
+
+| source_domain | 의미 | 활용 목적 |
+|---|---|---|
+| insurance_policy | 보험사 실손보험 약관 조항 | 약관 문구 비교, 보장·면책·한도 확인 |
+| insurance_cited_law | 보험 약관 내부 인용 법규 | 약관이 직접 인용한 법률 근거 확인 |
+| legal | 법령 및 감독규정 조문 | 금소법, 보험업법, 감독규정 등 규제 근거 확인 |
+| legal_attachment | 별표, 별지, 첨부 기준 | 세부 기준표 및 별표 근거 확인 |
+| external_reference | 외부 가이드라인 및 참고자료 | 금융광고, 손해사정 모범규준 등 보조 근거 확인 |
+
+---
+
+## 7. 통합 chunk 조회 예시
+
+```sql
+SELECT
+    source_domain,
+    citation_label,
+    source_url,
+    title,
+    LEFT(content, 300) AS content_preview
+FROM unified_retrieval_chunk
+WHERE is_active = TRUE
+LIMIT 10;
+```
+
+---
+
+## 8. source_domain별 데이터 수 확인
+
+```sql
+SELECT
+    source_domain,
+    COUNT(*) AS chunk_count
+FROM unified_retrieval_chunk
+WHERE is_active = TRUE
+GROUP BY source_domain
+ORDER BY source_domain;
+```
+
+정상 출력 예시는 다음과 같다.
+
+```text
+external_reference
+insurance_cited_law
+insurance_policy
+legal
+legal_attachment
+```
+
+---
+
+## 9. pgvector embedding 정합성 확인
+
+```sql
+SELECT COUNT(*)
+FROM unified_retrieval_chunk
+WHERE is_active = TRUE;
+```
+
+```sql
+SELECT COUNT(*)
+FROM unified_chunk_embedding;
+```
+
+```sql
+SELECT COUNT(*)
+FROM unified_chunk_embedding e
+JOIN unified_retrieval_chunk r
+  ON e.unified_chunk_id = r.unified_chunk_id
+WHERE r.is_active = TRUE;
+```
+
+정상 기준은 다음과 같다.
+
+```text
+active chunks = embeddings = active joined embeddings
+```
+
+---
+
+## 10. pgvector 검색 SQL 예시
+
+Agent 구현 팀에서 자체 retrieval 로직을 만들 경우 아래 SQL을 참고할 수 있다.
+
+```sql
+SELECT
+    r.source_domain,
+    r.citation_label,
+    r.source_url,
+    r.document_name,
+    r.document_type,
+    r.article_no,
+    r.title,
+    r.content,
+    1 - (e.embedding <=> %s::vector) AS similarity
+FROM unified_chunk_embedding e
+JOIN unified_retrieval_chunk r
+  ON e.unified_chunk_id = r.unified_chunk_id
+WHERE r.is_active = TRUE
+  AND e.embedding_model = %s
+ORDER BY e.embedding <=> %s::vector
+LIMIT %s;
+```
+
+`%s::vector`에는 query embedding을 pgvector 문자열 형식으로 넣는다.
+
+예시는 다음과 같다.
+
+```text
+[0.0123,-0.0456,0.0789,...]
+```
+
+---
+
+## 11. Python에서 샘플 데이터 조회
+
+```python
+import psycopg2
+
+conn = psycopg2.connect(
+    host="ep-red-smoke-aol741au.c-2.ap-southeast-1.aws.neon.tech",
+    port=5432,
+    dbname="neondb",
+    user="agent_reader",
+    password="AgentRead_2026_Strong!",
+    sslmode="require",
+)
 
 cur = conn.cursor()
 
-
-
 cur.execute("""
-
-&#x20;   SELECT COUNT(\*)
-
-&#x20;   FROM unified\_retrieval\_chunk
-
-&#x20;   WHERE is\_active = TRUE;
-
+    SELECT
+        source_domain,
+        citation_label,
+        source_url,
+        LEFT(content, 200)
+    FROM unified_retrieval_chunk
+    WHERE is_active = TRUE
+    LIMIT 5;
 """)
 
-
-
-count = cur.fetchone()\[0]
-
-print("active chunk count:", count)
-
-
+for row in cur.fetchall():
+    print(row)
 
 cur.close()
-
 conn.close()
-
 ```
 
+---
 
+## 12. 권한 안내
 
-정상 출력 기준:
+`agent_reader`는 read-only 계정이다.
 
+가능한 작업은 다음과 같다.
 
+- SELECT
+- 통합 chunk 조회
+- source_domain별 데이터 확인
+- citation_label 및 source_url 확인
+- AI Agent 개발용 검색 데이터 조회
 
-```text
+불가능한 작업은 다음과 같다.
 
-active chunk count: 4954
+- INSERT
+- UPDATE
+- DELETE
+- CREATE TABLE
+- DROP TABLE
 
-```
+DB owner 계정은 자동화 및 관리 작업에만 사용한다.
 
+---
 
+## 13. 사용 시 주의사항
 
-\---
+팀원은 `agent_reader` 계정만 사용한다.
 
+owner 계정 정보는 공유하지 않는다.
 
+GitHub Secrets 값은 공유하지 않는다.
 
-\## 6. 주요 테이블
+`.env` 파일은 GitHub에 업로드하지 않는다.
 
+AI Agent 개발 시 기본 조회 대상은 다음 두 테이블이다.
 
+- unified_retrieval_chunk
+- unified_chunk_embedding
 
-| 테이블/View | 설명 |
-
-|---|---|
-
-| `unified\_retrieval\_chunk` | 법령, 감독규정, 외부자료, 보험약관 본문과 출처 정보가 통합된 테이블 |
-
-| `unified\_chunk\_embedding` | pgvector embedding 저장 테이블 |
-
-| `agent\_retrieval\_view` | Agent 조회용 통합 View |
-
-| `legal\_article` | 법령/감독규정 조문 원천 테이블 |
-
-| `insurance\_text\_unit` | 보험약관 구조화 원천 테이블 |
-
-
-
-\---
-
-
-
-\## 7. 기본 조회 대상 테이블
-
-
-
-Agent 구현 시 우선 아래 테이블을 조회하면 됩니다.
-
-
-
-```text
-
-unified\_retrieval\_chunk
-
-```
-
-
-
-주요 컬럼:
-
-
-
-| 컬럼 | 설명 |
-
-|---|---|
-
-| `source\_domain` | 데이터 출처 유형 |
-
-| `citation\_label` | Agent 응답에 표시할 근거 라벨 |
-
-| `source\_url` | 원문 또는 출처 URL |
-
-| `document\_name` | 문서명 |
-
-| `document\_type` | 문서 유형 |
-
-| `section` | 문서 내 구역 |
-
-| `article\_no` | 조문 번호 |
-
-| `title` | 조항 제목 |
-
-| `content` | 본문 |
-
-| `metadata\_json` | 추가 메타데이터 |
-
-| `is\_active` | 활성 데이터 여부 |
-
-
-
-\---
-
-
-
-\## 8. source\_domain 구분
-
-
-
-| source\_domain | 의미 |
-
-|---|---|
-
-| `insurance\_policy` | 보험사 실손보험 약관 조항 |
-
-| `insurance\_cited\_law` | 보험 약관 내부 인용 법규 |
-
-| `legal` | 법령/감독규정 조문 |
-
-| `legal\_attachment` | 별표/별지/첨부 기준 |
-
-| `external\_reference` | 외부 가이드라인/보도자료 |
-
-
-
-\---
-
-
-
-\## 9. 기본 조회 SQL
-
-
-
-```sql
-
-SELECT
-
-&#x20;   source\_domain,
-
-&#x20;   citation\_label,
-
-&#x20;   source\_url,
-
-&#x20;   document\_name,
-
-&#x20;   article\_no,
-
-&#x20;   title,
-
-&#x20;   content
-
-FROM unified\_retrieval\_chunk
-
-WHERE is\_active = TRUE
-
-LIMIT 10;
-
-```
-
-
-
-\---
-
-
-
-\## 10. 약관 데이터 조회 SQL
-
-
-
-```sql
-
-SELECT
-
-&#x20;   citation\_label,
-
-&#x20;   source\_url,
-
-&#x20;   document\_name,
-
-&#x20;   section,
-
-&#x20;   article\_no,
-
-&#x20;   title,
-
-&#x20;   content
-
-FROM unified\_retrieval\_chunk
-
-WHERE is\_active = TRUE
-
-&#x20; AND source\_domain = 'insurance\_policy';
-
-```
-
-
-
-\---
-
-
-
-\## 11. 법령/감독규정 데이터 조회 SQL
-
-
-
-```sql
-
-SELECT
-
-&#x20;   citation\_label,
-
-&#x20;   source\_url,
-
-&#x20;   document\_name,
-
-&#x20;   article\_no,
-
-&#x20;   title,
-
-&#x20;   content
-
-FROM unified\_retrieval\_chunk
-
-WHERE is\_active = TRUE
-
-&#x20; AND source\_domain IN ('legal', 'legal\_attachment', 'insurance\_cited\_law');
-
-```
-
-
-
-\---
-
-
-
-\## 12. pgvector 검색용 테이블
-
-
-
-semantic search를 구현할 경우 아래 두 테이블을 조인해서 사용합니다.
-
-
-
-```text
-
-unified\_retrieval\_chunk
-
-unified\_chunk\_embedding
-
-```
-
-
-
-pgvector 검색 SQL 구조:
-
-
-
-```sql
-
-SELECT
-
-&#x20;   r.source\_domain,
-
-&#x20;   r.citation\_label,
-
-&#x20;   r.source\_url,
-
-&#x20;   r.document\_name,
-
-&#x20;   r.document\_type,
-
-&#x20;   r.article\_no,
-
-&#x20;   r.title,
-
-&#x20;   r.content,
-
-&#x20;   1 - (e.embedding <=> %s::vector) AS similarity
-
-FROM unified\_chunk\_embedding e
-
-JOIN unified\_retrieval\_chunk r
-
-&#x20; ON e.unified\_chunk\_id = r.unified\_chunk\_id
-
-WHERE r.is\_active = TRUE
-
-&#x20; AND e.embedding\_model = %s
-
-ORDER BY e.embedding <=> %s::vector
-
-LIMIT %s;
-
-```
-
-
-
-`%s::vector`에는 Agent 코드에서 생성한 query embedding을 pgvector 문자열 형식으로 넣습니다.
-
-
-
-예시 형식:
-
-
-
-```text
-
-\[0.0123,-0.0456,0.0789,...]
-
-```
-
-
-
-\---
-
-
-
-\## 13. 정리
-
-
-
-팀원은 로컬 DB나 Docker를 실행할 필요 없이  
-
-위 Neon PostgreSQL 접속 정보로 직접 DB에 연결하면 됩니다.
-
-
-
-Agent 구현 시에는 기본적으로 아래 두 테이블을 사용하면 됩니다.
-
-
-
-```text
-
-unified\_retrieval\_chunk
-
-unified\_chunk\_embedding
-
-```
-
-
-
-`agent\_retriever.py`는 필수 사용 파일이 아니라 참고용 검색 함수입니다.
-
+검색 함수 기반 사용은 README.md의 팀원 사용 방법을 참고한다.
