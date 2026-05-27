@@ -9,3 +9,4 @@ sqlalchemy
 beautifulsoup4
 lxml
 pgvector
+olefile
