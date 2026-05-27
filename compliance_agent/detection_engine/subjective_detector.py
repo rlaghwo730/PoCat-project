@@ -12,7 +12,8 @@ import json
 import re
 from dataclasses import dataclass
 
-import anthropic
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_ollama import ChatOllama
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
 
@@ -88,16 +89,15 @@ class _Candidate:
 class SubjectiveDetector:
     """Rule 2: 주관적·모호한 표현 탐지 (Pattern + LLM)"""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        # 클라이언트는 첫 호출 시점에 생성 (API 키 없는 환경에서도 인스턴스 생성 가능)
-        self._client: anthropic.Anthropic | None = None
+    def __init__(self, model: str = "llama3.2") -> None:
+        self._llm: ChatOllama | None = None
         self._model = model
 
     @property
-    def client(self) -> anthropic.Anthropic:
-        if self._client is None:
-            self._client = anthropic.Anthropic()
-        return self._client
+    def llm(self) -> ChatOllama:
+        if self._llm is None:
+            self._llm = ChatOllama(model=self._model, temperature=0.1)
+        return self._llm
 
     def detect(self, data: DetectionInput) -> list[Violation]:
         candidates = self._extract_candidates(data.content)
@@ -142,15 +142,11 @@ class SubjectiveDetector:
                 context=candidate.context,
                 expression=candidate.pattern_label,
             )
-            message = self.client.messages.create(
-                model=self._model,
-                max_tokens=256,
-                temperature=0.1,
-                system=_LLM_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = message.content[0].text
-            result = _parse_llm_json(text)
+            response = self.llm.invoke([
+                SystemMessage(content=_LLM_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ])
+            result = _parse_llm_json(response.content)
             return bool(result.get("is_subjective", True))
         except Exception:
             # 불확실하면 위반으로 표기 (CLAUDE.md 원칙)

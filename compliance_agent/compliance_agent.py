@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 
+from langfuse import get_client, observe
+
 from compliance_agent.detection_engine.violation_detector import ViolationDetector
 from compliance_agent.final_validation.final_check import FinalCheck
 from compliance_agent.iteration_controller.feedback_builder import FeedbackBuilder
@@ -34,8 +36,18 @@ class ComplianceAgent:
         # DetectionInput.session_id를 동일하게 설정해야 FAIL_MAX/FAIL_LOOP가 작동한다.
         self._trackers: dict[str, IterationTracker] = {}
 
+    @observe(name="compliance_validate", capture_input=False)
     def validate(self, input_data: DetectionInput) -> ComplianceReport:
         session_key = input_data.session_id or "__default__"
+        try:
+            get_client().update_current_trace(
+                session_id=session_key,
+                user_id="anonymous",
+                metadata={"iteration": input_data.iteration, "section_type": input_data.section_type},
+            )
+        except Exception:
+            pass
+
         tracker = self._trackers.setdefault(session_key, IterationTracker())
 
         logger.info(
@@ -61,7 +73,10 @@ class ComplianceAgent:
                     v.manual_flag = True
 
         reason = self._termination.evaluate(
-            detection_result.violations, tracker, input_data.iteration
+            detection_result.violations,
+            tracker,
+            input_data.iteration,
+            input_data.max_iterations,
         )
 
         if reason == TerminationReason.PASS:

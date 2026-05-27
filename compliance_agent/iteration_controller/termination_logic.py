@@ -27,12 +27,14 @@ class TerminationLogic:
         violations: list[Violation],
         tracker: IterationTracker,
         current_iteration: int,
+        max_iterations: int = MAX_ITERATIONS,
     ) -> TerminationReason:
         if not violations:
             return TerminationReason.PASS
         # HARD_LOOP: 직전 대비 위반 수 감소 없음 → 생성 에이전트가 수렴 불가 판정
         if tracker.has_hard_loop():
             return TerminationReason.HARD_LOOP
-        if current_iteration >= MAX_ITERATIONS:
+        # max_iterations는 오케스트레이터(plan)가 지정한 값을 우선 사용한다.
+        if current_iteration >= max_iterations:
             return TerminationReason.FAIL_MAX
         return TerminationReason.CONTINUE

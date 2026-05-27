@@ -19,17 +19,15 @@ def _mock_llm(mocker, is_contradiction: bool, subject: str = "입원 치료비")
         "subject": subject,
         "reason": "테스트 충돌 사유",
     })
-    mock_content = MagicMock()
-    mock_content.text = response_text
-    mock_message = MagicMock()
-    mock_message.content = [mock_content]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_message
+    mock_response = MagicMock()
+    mock_response.content = response_text
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.return_value = mock_response
     mocker.patch(
-        "compliance_agent.detection_engine.contradiction_detector.anthropic.Anthropic",
-        return_value=mock_client,
+        "compliance_agent.detection_engine.contradiction_detector.ChatOllama",
+        return_value=mock_llm_instance,
     )
-    return mock_client
+    return mock_llm_instance
 
 
 # 보장 조항과 면책 조항이 각각 있는 텍스트 (각 조항 > 20자 유지)
@@ -68,18 +66,18 @@ class TestContradictionDetector:
         assert len(violations) == 0
 
     def test_보장조항만_있으면_llm_미호출(self, mocker):
-        mock_client = _mock_llm(mocker, is_contradiction=True)
+        mock_llm_instance = _mock_llm(mocker, is_contradiction=True)
         detector = ContradictionDetector()
         data = make_input(COVERAGE_ONLY_CONTENT)
         detector.detect(data)
-        mock_client.messages.create.assert_not_called()
+        mock_llm_instance.invoke.assert_not_called()
 
     def test_면책조항만_있으면_llm_미호출(self, mocker):
-        mock_client = _mock_llm(mocker, is_contradiction=True)
+        mock_llm_instance = _mock_llm(mocker, is_contradiction=True)
         detector = ContradictionDetector()
         data = make_input(EXCLUSION_ONLY_CONTENT)
         detector.detect(data)
-        mock_client.messages.create.assert_not_called()
+        mock_llm_instance.invoke.assert_not_called()
 
     def test_severity_CRITICAL(self, mocker):
         _mock_llm(mocker, is_contradiction=True)
@@ -111,11 +109,11 @@ class TestContradictionDetector:
 
     def test_llm_오류시_meta_violation(self, mocker):
         """Rule 3은 LLM 실패 시 VIO_CON_LLM_FAIL meta-violation을 생성한다."""
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("API 오류")
+        mock_llm_instance = MagicMock()
+        mock_llm_instance.invoke.side_effect = Exception("연결 오류")
         mocker.patch(
-            "compliance_agent.detection_engine.contradiction_detector.anthropic.Anthropic",
-            return_value=mock_client,
+            "compliance_agent.detection_engine.contradiction_detector.ChatOllama",
+            return_value=mock_llm_instance,
         )
         detector = ContradictionDetector()
         data = make_input(CONTRADICTION_CONTENT)
@@ -139,13 +137,12 @@ class TestContradictionDetector:
 
     def test_max_pairs_초과시_잘라냄(self, mocker):
         """조항 쌍이 MAX_PAIRS 초과 시 앞의 것만 처리한다."""
-        mock_client = _mock_llm(mocker, is_contradiction=False)
+        mock_llm_instance = _mock_llm(mocker, is_contradiction=False)
         detector = ContradictionDetector()
-        # 보장·면책 조항을 충분히 많이 생성
         sections = []
         for i in range(10):
             sections.append(f"제{i*2+1}조 항목{i}를 보장합니다.")
             sections.append(f"제{i*2+2}조 항목{i}는 면책이며 보장하지 않습니다.")
         data = make_input("\n".join(sections))
         detector.detect(data)
-        assert mock_client.messages.create.call_count <= _MAX_PAIRS
+        assert mock_llm_instance.invoke.call_count <= _MAX_PAIRS

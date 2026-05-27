@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import re
 
-import anthropic
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_ollama import ChatOllama
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
 from .subjective_detector import _parse_llm_json
@@ -139,15 +140,15 @@ def _has_caveat(content: str, match_start: int, match_end: int) -> bool:
 class OverstatementDetector:
     """Rule 1: 과장·절대적 보장 표현 탐지 (Regex + 2단계 LLM caveat 검증)"""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        self._client: anthropic.Anthropic | None = None
+    def __init__(self, model: str = "llama3.2") -> None:
+        self._llm: ChatOllama | None = None
         self._model = model
 
     @property
-    def client(self) -> anthropic.Anthropic:
-        if self._client is None:
-            self._client = anthropic.Anthropic()
-        return self._client
+    def llm(self) -> ChatOllama:
+        if self._llm is None:
+            self._llm = ChatOllama(model=self._model, temperature=0.1)
+        return self._llm
 
     def detect(self, data: DetectionInput) -> list[Violation]:
         violations: list[Violation] = []
@@ -187,14 +188,11 @@ class OverstatementDetector:
         오류 시 False 반환 → 위반으로 처리 (CLAUDE.md: 불확실하면 위반)."""
         try:
             prompt = _CAVEAT_LLM_USER.format(window=window, label=label)
-            message = self.client.messages.create(
-                model=self._model,
-                max_tokens=128,
-                temperature=0.1,
-                system=_CAVEAT_LLM_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            result = _parse_llm_json(message.content[0].text)
+            response = self.llm.invoke([
+                SystemMessage(content=_CAVEAT_LLM_SYSTEM),
+                HumanMessage(content=prompt),
+            ])
+            result = _parse_llm_json(response.content)
             return bool(result.get("is_real_caveat", False))
         except Exception:
             return False  # 불확실하면 위반으로 처리

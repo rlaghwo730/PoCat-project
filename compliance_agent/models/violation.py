@@ -57,6 +57,7 @@ class DetectionInput:
     session_id: str = ""  # 동일 세션의 iteration을 추적하는 키
     product_meta: dict[str, Any] = field(default_factory=dict)
     coverage_context: Optional[CoverageContext] = None
+    max_iterations: int = 3  # 오케스트레이터(plan)가 지정. FAIL_MAX 판정 기준의 단일 소스.
 
 
 @dataclass

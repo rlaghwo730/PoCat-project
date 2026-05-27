@@ -12,19 +12,17 @@ def detector():
 
 
 def _mock_caveat_llm(mocker, is_real_caveat: bool):
-    """LLM의 caveat 검증 응답을 고정한다."""
+    """ChatOllama.invoke()의 caveat 검증 응답을 고정한다."""
     response_text = json.dumps({"is_real_caveat": is_real_caveat, "reason": "테스트"})
-    mock_content = MagicMock()
-    mock_content.text = response_text
-    mock_message = MagicMock()
-    mock_message.content = [mock_content]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_message
+    mock_response = MagicMock()
+    mock_response.content = response_text
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.return_value = mock_response
     mocker.patch(
-        "compliance_agent.detection_engine.overstatement_detector.anthropic.Anthropic",
-        return_value=mock_client,
+        "compliance_agent.detection_engine.overstatement_detector.ChatOllama",
+        return_value=mock_llm_instance,
     )
-    return mock_client
+    return mock_llm_instance
 
 
 class TestOverstatementDetector:
@@ -121,11 +119,11 @@ class TestOverstatementDetector:
 
     def test_caveat_llm_오류시_보수적으로_위반처리(self, mocker):
         """LLM 호출 실패 시 보수적으로 위반으로 처리한다 (CLAUDE.md 원칙)."""
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("API 오류")
+        mock_llm_instance = MagicMock()
+        mock_llm_instance.invoke.side_effect = Exception("연결 오류")
         mocker.patch(
-            "compliance_agent.detection_engine.overstatement_detector.anthropic.Anthropic",
-            return_value=mock_client,
+            "compliance_agent.detection_engine.overstatement_detector.ChatOllama",
+            return_value=mock_llm_instance,
         )
         detector = OverstatementDetector()
         data = make_input("입원 치료비를 전액보장합니다. 단, 자기부담금 10,000원이 적용됩니다.")
@@ -134,8 +132,8 @@ class TestOverstatementDetector:
 
     def test_caveat_없으면_llm_미호출(self, mocker):
         """과장 표현이 있어도 caveat이 없으면 LLM을 호출하지 않는다."""
-        mock_client = _mock_caveat_llm(mocker, is_real_caveat=True)
+        mock_llm_instance = _mock_caveat_llm(mocker, is_real_caveat=True)
         data = make_input("입원 치료비를 전액보장합니다.")
         violations = OverstatementDetector().detect(data)
         assert len(violations) >= 1
-        mock_client.messages.create.assert_not_called()
+        mock_llm_instance.invoke.assert_not_called()
