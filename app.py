@@ -322,7 +322,12 @@ def get_orchestrator() -> Orchestrator:
 
 def generate_business_method(request: dict) -> str:
     """사업방법서 JSON 데이터에서 해당 보험사 데이터를 찾아 반환한다."""
-    data_path = Path(os.getenv("GENERATION_AGENT_DIR", "")) / "data" / "일반_사업방법서_3사통합.json"
+    # 환경변수 우선, 없으면 프로젝트 루트 기준으로 자동 탐색
+    gen_agent_dir = os.getenv("GENERATION_AGENT_DIR", "")
+    if gen_agent_dir:
+        data_path = Path(gen_agent_dir) / "data" / "일반_사업방법서_3사통합.json"
+    else:
+        data_path = Path(__file__).parent / "generation_agent" / "data" / "일반_사업방법서_3사통합.json"
     if not data_path.exists():
         return "사업방법서 데이터 파일을 찾을 수 없습니다."
     with open(data_path, encoding="utf-8") as f:
