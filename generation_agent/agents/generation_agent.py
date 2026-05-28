@@ -7,7 +7,6 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
@@ -52,7 +51,13 @@ _DESCRIPTION_SYSTEM = (
 
 class GenerationAgent:
     def __init__(self) -> None:
-        self.llm = ChatOllama(model="qwen2.5:14b")
+        # 환경변수에 따라 LLM 선택 (로컬: Ollama, 클라우드: Upstage Solar)
+        if os.getenv("UPSTAGE_API_KEY"):
+            from langchain_upstage import ChatUpstage
+            self.llm = ChatUpstage(model="solar-pro")
+        else:
+            from langchain_ollama import ChatOllama
+            self.llm = ChatOllama(model="qwen2.5:14b")
         self._defaults = _load_default_schema()
         vectorstore = get_vectorstore()
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
