@@ -51,13 +51,17 @@ _DESCRIPTION_SYSTEM = (
 
 class GenerationAgent:
     def __init__(self) -> None:
-        # 환경변수에 따라 LLM 선택 (로컬: Ollama, 클라우드: Upstage Solar)
+        # 환경변수에 따라 LLM 선택 (클라우드: Upstage Solar, 로컬: Ollama)
         if os.getenv("UPSTAGE_API_KEY"):
             from langchain_upstage import ChatUpstage
             self.llm = ChatUpstage(model="solar-pro")
         else:
-            from langchain_ollama import ChatOllama
-            self.llm = ChatOllama(model="qwen2.5:14b")
+            try:
+                from langchain_ollama import ChatOllama
+                self.llm = ChatOllama(model="qwen2.5:14b")
+            except ImportError:
+                from langchain_upstage import ChatUpstage
+                self.llm = ChatUpstage(model="solar-pro")
         self._defaults = _load_default_schema()
         vectorstore = get_vectorstore()
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
