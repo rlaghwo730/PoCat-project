@@ -11,5 +11,5 @@ pydantic==2.11.7
 streamlit>=1.35.0
 python-dotenv>=1.0.0
 langfuse>=2.0.0
-echo anthropic>=0.20.0 
-echo psycopg2-binary>=2.9.0 
+anthropic>=0.20.0
+psycopg2-binary>=2.9.0
