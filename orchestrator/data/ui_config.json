@@ -5,6 +5,20 @@
       "title": "상품 정보",
       "fields": [
         {
+          "key": "insurance_company",
+          "label": "보험사",
+          "type": "dropdown",
+          "options": ["삼성화재", "DB손해보험", "현대해상"],
+          "default": "삼성화재"
+        },
+        {
+          "key": "insurance_type",
+          "label": "보험 종류",
+          "type": "dropdown",
+          "options": ["일반 실손의료비보험", "유병력자 실손의료비보험"],
+          "default": "일반 실손의료비보험"
+        },
+        {
           "key": "product_name",
           "label": "상품명",
           "type": "text",
@@ -37,6 +51,20 @@
           "fixed_reason": "실손보험 표준"
         },
         {
+          "key": "mandatory_enrollment",
+          "label": "의무가입 여부",
+          "type": "fixed",
+          "fixed_value": "해당없음",
+          "fixed_reason": "실손보험 표준"
+        },
+        {
+          "key": "premium_payment_cycle",
+          "label": "보험료 납입주기",
+          "type": "dropdown",
+          "options": ["월납", "3개월납", "6개월납", "연납"],
+          "default": "월납"
+        },
+        {
           "key": "renewal_type",
           "label": "갱신유형",
           "type": "dropdown",
@@ -64,9 +92,22 @@
         {
           "key": "join_age_range",
           "label": "가입연령",
-          "type": "fixed",
-          "fixed_value": "0세~65세",
-          "fixed_reason": "삼성화재 기준"
+          "type": "text",
+          "default": "0세~65세"
+        },
+        {
+          "key": "fetal_enrollment",
+          "label": "태아 가입 가능 여부",
+          "type": "radio",
+          "options": ["가능", "불가"],
+          "default": "가능"
+        },
+        {
+          "key": "policy_loan",
+          "label": "보험계약대출 여부",
+          "type": "radio",
+          "options": ["가능", "불가"],
+          "default": "불가"
         }
       ]
     },
@@ -76,31 +117,54 @@
       "fields": [
         {
           "key": "basic_coverage_items",
-          "label": "기본 보장종목",
-          "type": "multiselect",
+          "label": "기본 보장종목 (급여 상해·질병 동시 가입)",
+          "type": "checkbox_all",
           "options": ["급여 상해", "급여 질병"],
           "default": ["급여 상해", "급여 질병"]
         },
         {
           "key": "noncovered_rider_items",
-          "label": "비급여 특약종목",
-          "type": "multiselect",
+          "label": "비급여 특약종목 (상해·질병·3대 비급여 동시 가입)",
+          "type": "checkbox_all",
           "options": ["비급여 상해", "비급여 질병", "3대 비급여"],
-          "default": ["비급여 상해", "비급여 질병", "3대 비급여"]
+          "default": []
         },
         {
           "key": "three_major_noncovered_items",
-          "label": "3대 비급여 세부항목",
-          "type": "multiselect",
+          "label": "3대 비급여 세부항목 (도수치료·주사료·MRI 동시 가입)",
+          "type": "checkbox_all",
           "options": ["도수치료·체외충격파·증식치료", "주사료", "자기공명영상진단"],
-          "default": ["도수치료·체외충격파·증식치료", "주사료", "자기공명영상진단"]
+          "default": []
         },
         {
-          "key": "coverage_limit",
-          "label": "보장한도",
-          "type": "fixed",
-          "fixed_value": "5천만원",
-          "fixed_reason": "삼성화재 기준"
+          "key": "coverage_limit_basic",
+          "label": "급여 보장한도",
+          "type": "text",
+          "default": "5천만원"
+        },
+        {
+          "key": "coverage_limit_noncovered",
+          "label": "비급여 보장한도",
+          "type": "text",
+          "default": "5천만원"
+        },
+        {
+          "key": "coverage_limit_dosu",
+          "label": "도수치료·체외충격파 한도",
+          "type": "text",
+          "default": "350만원"
+        },
+        {
+          "key": "coverage_limit_injection",
+          "label": "주사료 한도",
+          "type": "text",
+          "default": "250만원"
+        },
+        {
+          "key": "coverage_limit_mri",
+          "label": "MRI(자기공명영상진단) 한도",
+          "type": "text",
+          "default": "300만원"
         },
         {
           "key": "deductible_rule",
@@ -121,26 +185,6 @@
           "type": "dropdown",
           "options": ["본인", "미성년 자녀", "태아"],
           "default": "본인"
-        },
-        {
-          "key": "birth_date",
-          "label": "생년월일",
-          "type": "date",
-          "min": "1900-01-01",
-          "default": "1990-01-01"
-        },
-        {
-          "key": "gender",
-          "label": "성별",
-          "type": "radio",
-          "options": ["남성", "여성"],
-          "default": "남성"
-        },
-        {
-          "key": "occupation",
-          "label": "직업",
-          "type": "text",
-          "default": "회사원"
         }
       ]
     }

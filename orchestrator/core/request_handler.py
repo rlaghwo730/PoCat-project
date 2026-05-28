@@ -10,9 +10,8 @@ logger = logging.getLogger(__name__)
 _REQUIRED_FIELDS: dict[str, list[str]] = {
     "document_request": ["document_type", "product_name"],
     "coverage_conditions": ["coverage_limit"],
-    "applicant_info": ["birth_date"],
+    "applicant_info": ["applicant_type"],
 }
-
 
 def validate(request: dict) -> None:
     """request 딕셔너리의 필수 필드 존재 여부를 검증한다.
