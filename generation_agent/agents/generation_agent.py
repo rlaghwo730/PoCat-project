@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_upstage import ChatUpstage
+from langchain_ollama import ChatOllama
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
@@ -50,7 +50,7 @@ _DESCRIPTION_SYSTEM = (
 
 class GenerationAgent:
     def __init__(self) -> None:
-        self.llm = ChatUpstage(model="solar-pro")
+        self.llm = ChatOllama(model="qwen2.5:14b")
         self._defaults = _load_default_schema()
         vectorstore = get_vectorstore()
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})

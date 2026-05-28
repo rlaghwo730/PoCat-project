@@ -10,10 +10,15 @@ from langchain_upstage import UpstageEmbeddings
 
 load_dotenv()
 
-DATA_PATH = Path(__file__).parent.parent / "data" / "samsung_insurance_clause_dataset.json"
+DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_FILES = [
+    "일반_약관_3사통합.json",
+    "일반_사업방법서_3사통합.json",
+    "일반_상품요약서_3사통합.json",
+]
 CHROMA_PERSIST_DIR = str(Path(__file__).parent.parent / "chroma_db")
 
-MAX_CHARS = 3000  # solar-embedding-1-large 4000토큰 한도에 맞춘 안전 마진
+MAX_CHARS = 3000
 
 _splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
@@ -22,16 +27,19 @@ _splitter = RecursiveCharacterTextSplitter(
 
 
 def load_documents() -> list[Document]:
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"데이터 파일을 찾을 수 없습니다: {DATA_PATH}")
-
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        raw: list[dict] = json.load(f)
-
-    return [
-        Document(page_content=item["page_content"], metadata=item["metadata"])
-        for item in raw
-    ]
+    documents = []
+    for filename in DATA_FILES:
+        path = DATA_DIR / filename
+        if not path.exists():
+            raise FileNotFoundError(f"데이터 파일을 찾을 수 없습니다: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            raw: list[dict] = json.load(f)
+        documents.extend([
+            Document(page_content=item["page_content"], metadata=item["metadata"])
+            for item in raw
+        ])
+    print(f"[document_loader] {filename}: {len(raw)}개 항목 로드")
+    return documents
 
 
 def _split_if_needed(documents: list[Document]) -> list[Document]:
@@ -61,7 +69,7 @@ def get_vectorstore(force_reload: bool = False) -> Chroma:
 
     documents = load_documents()
     documents = _split_if_needed(documents)
-    print(f"[document_loader] {len(documents)}개 청크 임베딩 중...")
+    print(f"[document_loader] 총 {len(documents)}개 청크 임베딩 중...")
     vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,

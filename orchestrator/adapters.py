@@ -123,7 +123,6 @@ def build_detection_input(
         session_id=session_id,
         product_meta=product_meta,
         coverage_context=coverage_context,
-        max_iterations=max_iterations,
     )
 
 

@@ -11,13 +11,13 @@ from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
-import streamlit as st
 from dotenv import load_dotenv
+load_dotenv()  # orchestrator import 전에 먼저 호출해야 GENERATION_AGENT_DIR이 적용됨
+
+import streamlit as st
 
 import orchestrator  # noqa: F401 — __init__.py의 sys.path 보정을 트리거
 from orchestrator.orchestrator import Orchestrator
-
-load_dotenv()
 
 MAX_ITERATIONS = 3
 
@@ -195,6 +195,31 @@ def get_orchestrator() -> Orchestrator:
     return Orchestrator()
 
 
+def generate_business_method(request: dict) -> str:
+    """사업방법서 JSON 데이터에서 해당 보험사 데이터를 찾아 반환한다."""
+    import json
+    from pathlib import Path
+
+    data_path = Path(os.getenv("GENERATION_AGENT_DIR", "")) / "data" / "일반_사업방법서_3사통합.json"
+    if not data_path.exists():
+        return "사업방법서 데이터 파일을 찾을 수 없습니다."
+
+    with open(data_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    company = request["document_request"].get("insurance_company", "삼성화재")
+    chunks = [
+        item["page_content"]
+        for item in data
+        if item.get("metadata", {}).get("company") == company
+    ]
+
+    if not chunks:
+        chunks = [item["page_content"] for item in data]
+
+    return "\n\n".join(chunks)
+
+
 def go_prev():
     st.session_state.current_step -= 1
 
@@ -205,7 +230,7 @@ def go_next():
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📄 실손의료보험 약관 초안 작성 에이전트")
-st.caption("RAG 기반으로 삼성화재 약관 데이터를 참고하여 새로운 약관 초안을 생성합니다.")
+st.caption("RAG 기반으로 삼성화재·DB손해보험·현대해상 약관 데이터를 참고하여 새로운 약관 초안을 생성합니다.")
 st.divider()
 
 col_form, col_result = st.columns([4, 6], gap="large")
@@ -316,8 +341,12 @@ with col_result:
             with st.spinner("상품설명서 생성 중..."):
                 description = orch.generate_description(result["content"], request)
 
+            # ── 사업방법서 생성 ───────────────────────────────────────
+            with st.spinner("사업방법서 불러오는 중..."):
+                business_method = generate_business_method(request)
+
             # ── 탭 출력 ───────────────────────────────────────────────────
-            tab_clause, tab_desc = st.tabs(["약관", "상품설명서"])
+            tab_clause, tab_desc, tab_biz = st.tabs(["약관", "상품설명서", "사업방법서"])
 
             with tab_clause:
                 highlighted = apply_violation_highlights(
@@ -329,11 +358,13 @@ with col_result:
             with tab_desc:
                 st.markdown(description)
 
+            with tab_biz:
+                st.markdown(business_method)
+
         except FileNotFoundError as e:
             st.error(str(e))
             st.info(
-                "`samsung_insurance_clause_dataset.json` 파일을 "
-                "generation_agent/data 폴더에 배치한 후 다시 시도하세요."
+                "데이터 파일을 generation_agent/data 폴더에 배치한 후 다시 시도하세요."
             )
         except Exception as e:
             st.error(f"오류 발생: {e}")
@@ -345,7 +376,7 @@ with col_result:
             "**생성 흐름**\n"
             "1. 요청 검증 및 작업 계획 수립\n"
             "2. RAG로 기존 약관 5개 청크 검색\n"
-            "3. Upstage Solar LLM으로 약관 초안 생성\n"
+            "3. Ollama(qwen2.5:14b)로 약관 초안 생성\n"
             "4. ComplianceAgent로 법규 준수 검토 (실제 규제 DB 연동)\n"
             "5. VIOLATIONS_FOUND → regenerate()로 재생성 (최대 3회)\n"
             "6. COMPLIANCE_PASSED → 최종 결과 출력 / 미통과 → 수동 검토 안내"
