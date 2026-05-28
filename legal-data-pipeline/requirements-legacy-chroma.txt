@@ -1,0 +1,4 @@
+# Optional legacy dependency set.
+# Install only when running legacy ChromaDB scripts under src/legacy/chroma.
+
+chromadb

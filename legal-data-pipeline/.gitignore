@@ -5,3 +5,7 @@ silson_legal_cloud_dump.sql
 __pycache__/
 *.pyc
 data/vector_store/
+.venv/
+airflow/logs/
+*.sql
+*.dump

@@ -154,3 +154,36 @@ LIMIT %s;
 - DROP TABLE
 
 DB 접속 정보는 `DB_CONNECTION_GUIDE.md`를 참고한다.
+---
+
+## 2026-05 구조 업데이트 메모 (운영 동작 유지)
+
+현재 `src` 구조는 아래처럼 정리되었다.
+
+- `src/collectors/`: 수집 스크립트 본체
+- `src/parsers/`: 파싱 스크립트 본체
+- `src/builders/`: 빌드 스크립트 본체
+- `src/integrated/`: 통합 chunk/embedding/조회 관련 운영 코드
+- `src/tools/`: 점검/디버그/탐색용 스크립트
+- `src/legacy/chroma/`: ChromaDB 레거시 스크립트
+
+중요: 기존 실행 커맨드 호환을 위해 `src/*.py` 경로의 래퍼 파일을 유지하고 있다.
+
+예시:
+
+```bash
+python src/collect_legal_api.py
+python src/collect_legal_body.py
+python src/parse_external_docs.py
+python src/build_retrieval_registry.py
+```
+
+위 커맨드는 계속 사용 가능하다.
+
+### requirements 사용 기준
+
+- 기본(기존 호환): `requirements.txt`
+- 운영 코어 참고: `requirements-core.txt`
+- 레거시 Chroma 참고: `requirements-legacy-chroma.txt`
+
+기존 CI/로컬 동작 보존을 위해 기본 설치는 계속 `requirements.txt` 기준으로 사용한다.
