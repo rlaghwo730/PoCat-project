@@ -28,7 +28,7 @@ st.set_page_config(
 # ── ui_config.json 로드 ───────────────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def load_ui_config():
-    path = Path(__file__).parent.parent / "orchestrator" / "data" / "ui_config.json"
+    path = Path(__file__).parent / "data" / "ui_config.json"
     if not path.exists():
         raise FileNotFoundError(f"ui_config.json을 찾을 수 없습니다: {path}")
     with open(path, encoding="utf-8") as f:
