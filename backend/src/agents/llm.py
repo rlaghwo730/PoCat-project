@@ -32,6 +32,7 @@ def get_llm_by_type(llm_type: str):
         logger.info("[LLM] Upstage Solar 사용: solar-pro")
         return ChatUpstage(model="solar-pro", api_key=upstage_key)
 
-    from langchain_ollama import ChatOllama
-    logger.info("[LLM] Ollama 로컬 사용: qwen2.5:14b")
-    return ChatOllama(model="qwen2.5:14b")
+    raise ValueError(
+        "LLM API 키가 설정되지 않았습니다.\n"
+        ".env 파일에 OPENROUTER_API_KEY 또는 UPSTAGE_API_KEY를 설정해주세요."
+    )
