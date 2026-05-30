@@ -195,9 +195,10 @@ class MissingReqDetector:
 
         if ctx.coverage_limit:
             for category, limit in ctx.coverage_limit.items():
-                if not self._is_present(data.content, [f"{limit:,}", str(limit)]):
+                limit_str = f"{limit:,}" if isinstance(limit, int) else str(limit)
+                if not self._is_present(data.content, [limit_str, str(limit)]):
                     _add(
-                        f"보장한도 '{category}: {limit:,}원'이 약관 본문에 명시되어야 합니다."
+                        f"보장한도 '{category}: {limit_str}원'이 약관 본문에 명시되어야 합니다."
                     )
 
         if ctx.premium_change_reason_required:
