@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import asyncio
 
@@ -101,6 +101,47 @@ def _build_improvement_note(messages: list, iteration: int, status: str) -> str:
     return "워크플로우 완료."
 
 
+# ── 결과 조립 헬퍼 ───────────────────────────────────────────────────────────
+
+async def _build_result(result: dict, request: dict, db_warning: Optional[str]) -> dict:
+    """최종 state → API 응답 dict 변환 (run_workflow / stream_workflow 공용)"""
+    raw_status  = result.get("status", "PASS")
+    iteration   = result.get("iteration", 0)
+    violations  = result.get("violations", [])
+    messages    = result.get("messages", [])
+    final_content = result.get("final_content") or result.get("draft_content", "")
+    product_description = result.get("product_description", "")
+
+    if not product_description and final_content:
+        try:
+            agent = _get_generation_agent()
+            product_description = await asyncio.to_thread(
+                agent.generate_product_description, final_content, request
+            )
+        except Exception as pd_exc:
+            logger.warning("[workflow] product_description 생성 실패: %s", pd_exc)
+            product_description = ""
+
+    if raw_status == "PASS":
+        api_status = "COMPLIANCE_PASSED"
+    elif raw_status == "MANUAL_REVIEW":
+        api_status = "MANUAL_REVIEW_REQUIRED"
+    else:
+        api_status = "ORCHESTRATOR_ERROR"
+
+    return {
+        "status":              api_status,
+        "content":             final_content,
+        "iteration":           iteration,
+        "violations_for_ui":   _violations_to_ui(violations),
+        "suggestions":         _build_suggestions(violations) if api_status != "COMPLIANCE_PASSED" else [],
+        "product_description": product_description,
+        "business_method":     _load_business_method(request),
+        "improvement_note":    _build_improvement_note(messages, iteration, api_status),
+        "db_warning":          db_warning,
+    }
+
+
 # ── 메인 실행 함수 ────────────────────────────────────────────────────────────
 
 async def run_workflow(request: dict) -> dict:
@@ -141,66 +182,81 @@ async def run_workflow(request: dict) -> dict:
     except Exception as exc:
         logger.exception("[workflow] 실행 중 예외 발생: %s", exc)
         return {
-            "status":             "ORCHESTRATOR_ERROR",
-            "content":            "",
-            "iteration":          0,
-            "violations_for_ui":  [],
-            "suggestions":        [],
+            "status":              "ORCHESTRATOR_ERROR",
+            "content":             "",
+            "iteration":           0,
+            "violations_for_ui":   [],
+            "suggestions":         [],
             "product_description": "",
-            "business_method":    _load_business_method(request),
-            "improvement_note":   f"워크플로우 오류: {exc}",
-            "db_warning":         db_warning,
-            "error":              str(exc),
+            "business_method":     _load_business_method(request),
+            "improvement_note":    f"워크플로우 오류: {exc}",
+            "db_warning":          db_warning,
+            "error":               str(exc),
         }
 
     elapsed = time.perf_counter() - t0
     logger.info("[workflow] 완료 (%.1fs)", elapsed)
 
-    # ── 결과 추출 ─────────────────────────────────────────────────────────────
-    raw_status  = result.get("status", "PASS")
-    iteration   = result.get("iteration", 0)
-    violations  = result.get("violations", [])
-    messages    = result.get("messages", [])
-
-    # final_content가 없으면 draft_content로 대체 (PASS→end 경로에서 supervisor가 설정)
-    final_content = result.get("final_content") or result.get("draft_content", "")
-
-    # PASS 경로(edit_node 미실행)일 때 product_description 보완 생성
-    product_description = result.get("product_description", "")
-    if not product_description and final_content:
-        try:
-            agent = _get_generation_agent()
-            product_description = await asyncio.to_thread(
-                agent.generate_product_description, final_content, request
-            )
-        except Exception as pd_exc:
-            logger.warning("[workflow] product_description 생성 실패: %s", pd_exc)
-            product_description = ""
-
-    # 상태 매핑
-    if raw_status == "PASS":
-        api_status = "COMPLIANCE_PASSED"
-    elif raw_status == "MANUAL_REVIEW":
-        api_status = "MANUAL_REVIEW_REQUIRED"
-    else:
-        api_status = "ORCHESTRATOR_ERROR"
-
-    improvement_note = _build_improvement_note(messages, iteration, api_status)
-    business_method  = _load_business_method(request)
-
+    output = await _build_result(result, request, db_warning)
     logger.info(
         "[workflow] status=%s iteration=%d violations=%d elapsed=%.1fs",
-        api_status, iteration, len(violations), elapsed,
+        output["status"], output["iteration"],
+        len(output["violations_for_ui"]), elapsed,
     )
+    return output
 
-    return {
-        "status":             api_status,
-        "content":            final_content,
-        "iteration":          iteration,
-        "violations_for_ui":  _violations_to_ui(violations),
-        "suggestions":        _build_suggestions(violations) if api_status != "COMPLIANCE_PASSED" else [],
-        "product_description": product_description,
-        "business_method":    business_method,
-        "improvement_note":   improvement_note,
-        "db_warning":         db_warning,
+
+# ── 스트리밍 실행 함수 ────────────────────────────────────────────────────────
+
+async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
+    """
+    LangGraph 워크플로우를 SSE 형식으로 스트리밍.
+
+    각 노드 완료 시 progress 이벤트를 emit하고,
+    마지막에 result 이벤트(전체 결과)를 emit한다.
+    """
+    db_warning = _check_db_warning()
+
+    initial_state: State = {
+        "messages":            [],
+        "request":             request,
+        "draft_content":       "",
+        "violations":          [],
+        "iteration":           0,
+        "final_content":       "",
+        "product_description": "",
+        "business_method":     "",
+        "status":              "PASS",
+        "next_step":           "",
     }
+
+    final_state = None
+    try:
+        async for snapshot in workflow.astream(initial_state, stream_mode="values"):
+            final_state = snapshot
+            msgs = snapshot.get("messages", [])
+            last_msg = msgs[-1] if msgs else {}
+            progress = {
+                "type":      "progress",
+                "node":      last_msg.get("role", ""),
+                "status":    snapshot.get("status"),
+                "iteration": snapshot.get("iteration", 0),
+                "message":   last_msg.get("content", ""),
+            }
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+
+    except Exception as exc:
+        logger.exception("[stream] 실행 중 예외: %s", exc)
+        error_event = {"type": "error", "message": str(exc)}
+        yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    if final_state is None:
+        yield f"data: {json.dumps({'type': 'error', 'message': '워크플로우 결과 없음'}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    result = await _build_result(final_state, request, db_warning)
+    yield f"data: {json.dumps({'type': 'result', **result}, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"

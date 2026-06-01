@@ -8,10 +8,10 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..service.workflow_service import run_workflow
+from ..service.workflow_service import run_workflow, stream_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,33 @@ async def generate_clause(body: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
     return result
+
+
+@app.post("/generate/stream")
+async def generate_clause_stream(body: GenerateRequest):
+    """
+    보험 약관 초안 생성 — SSE 스트리밍.
+
+    각 노드 완료 시 progress 이벤트, 전체 완료 시 result 이벤트를 반환한다.
+    이벤트 형식: data: {json}\\n\\n  /  data: [DONE]\\n\\n
+    """
+    payload = body.model_dump()
+
+    if not payload.get("session_id"):
+        payload["session_id"] = str(uuid.uuid4())
+
+    basic_items = payload.get("coverage_conditions", {}).get("basic_coverage_items", [])
+    if not basic_items:
+        raise HTTPException(
+            status_code=400,
+            detail="coverage_conditions.basic_coverage_items 에 하나 이상의 항목이 필요합니다.",
+        )
+
+    return StreamingResponse(
+        stream_workflow(payload),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")

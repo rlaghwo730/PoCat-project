@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 from compliance_agent.models import DetectionInput, DetectionResult, Violation
 
 from .contradiction_detector import ContradictionDetector
@@ -17,7 +19,7 @@ from .subjective_detector import SubjectiveDetector
 
 
 class ViolationDetector:
-    """각 Rule 탐지기를 순서대로 실행하고 결과를 취합한다."""
+    """각 Rule 탐지기를 asyncio.gather로 병렬 실행하고 결과를 취합한다."""
 
     def __init__(self) -> None:
         self._overstatement = OverstatementDetector()
@@ -26,19 +28,17 @@ class ViolationDetector:
         self._forbidden = ForbiddenWordDetector()
         self._missing_req = MissingReqDetector()
 
-        # detect()에서 순회. 테스트가 _run_xxx 메서드를 monkeypatch 하므로 유지한다.
-        self._detectors = [
-            self._run_overstatement,
-            self._run_subjective,
-            self._run_contradiction,
-            self._run_forbidden_word,
-            self._run_missing_requirement,
-        ]
-
-    def detect(self, input_data: DetectionInput) -> DetectionResult:
+    async def detect(self, input_data: DetectionInput) -> DetectionResult:
+        violations_lists = await asyncio.gather(
+            asyncio.to_thread(self._run_overstatement, input_data),
+            asyncio.to_thread(self._run_subjective, input_data),
+            asyncio.to_thread(self._run_contradiction, input_data),
+            asyncio.to_thread(self._run_forbidden_word, input_data),
+            asyncio.to_thread(self._run_missing_requirement, input_data),
+        )
         result = DetectionResult()
-        for detector in self._detectors:
-            result.violations.extend(detector(input_data))
+        for violations in violations_lists:
+            result.violations.extend(violations)
         return result
 
     def _run_overstatement(self, data: DetectionInput) -> list[Violation]:
