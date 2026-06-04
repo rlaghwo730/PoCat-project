@@ -10,7 +10,7 @@ from typing import Optional
 
 import asyncio
 
-from ..graph.builder import workflow
+from ..graph.builder import build_graph
 from ..graph.nodes import _get_generation_agent
 from ..graph.types import State
 
@@ -118,6 +118,8 @@ async def run_workflow(request: dict) -> dict:
         improvement_note  - 진행 요약 메시지
         db_warning        - DB 미연결 경고 (없으면 null)
     """
+    model_override: Optional[str] = request.get("model")
+    # request에 "model" 키를 유지해서 GenerationAgent까지 전달되게 함
     db_warning = _check_db_warning()
 
     # ── State 초기값 ──────────────────────────────────────────────────────────
@@ -137,7 +139,8 @@ async def run_workflow(request: dict) -> dict:
     # ── 그래프 실행 ───────────────────────────────────────────────────────────
     t0 = time.perf_counter()
     try:
-        result = await workflow.ainvoke(initial_state)
+        graph = build_graph(model_override=model_override)
+        result = await graph.ainvoke(initial_state)
     except Exception as exc:
         logger.exception("[workflow] 실행 중 예외 발생: %s", exc)
         return {
@@ -151,6 +154,7 @@ async def run_workflow(request: dict) -> dict:
             "improvement_note":   f"워크플로우 오류: {exc}",
             "db_warning":         db_warning,
             "error":              str(exc),
+            "model_used":         model_override or "default",
         }
 
     elapsed = time.perf_counter() - t0
@@ -203,4 +207,5 @@ async def run_workflow(request: dict) -> dict:
         "business_method":    business_method,
         "improvement_note":   improvement_note,
         "db_warning":         db_warning,
+        "model_used":         model_override or "default",
     }

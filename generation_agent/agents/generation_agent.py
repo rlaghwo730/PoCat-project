@@ -14,7 +14,7 @@ from rag.document_loader import get_vectorstore
 
 load_dotenv()
 
-_SCHEMA_PATH = Path(__file__).parent.parent.parent / "orchestrator" / "data" / "input_schema.json"
+_SCHEMA_PATH = Path(__file__).parent.parent / "data" / "input_schema.json"
 
 
 def _load_default_schema() -> dict:
@@ -51,23 +51,32 @@ _DESCRIPTION_SYSTEM = (
 
 class GenerationAgent:
     def __init__(self) -> None:
-        # 환경변수에 따라 LLM 선택 (클라우드: Upstage Solar, 로컬: Ollama)
-        if os.getenv("UPSTAGE_API_KEY"):
-            from langchain_upstage import ChatUpstage
-            self.llm = ChatUpstage(model="solar-pro")
-        else:
-            try:
-                from langchain_ollama import ChatOllama
-                self.llm = ChatOllama(model="qwen2.5:14b")
-            except ImportError:
-                from langchain_upstage import ChatUpstage
-                self.llm = ChatUpstage(model="solar-pro")
+        self._model_override = None  # 기본값, generate() 호출 시 덮어씀
         self._defaults = _load_default_schema()
         vectorstore = get_vectorstore()
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
         self.langfuse = Langfuse()
         self.langfuse_handler = CallbackHandler()
         self._db_url = os.getenv("DB_API_URL")
+
+    def _get_llm(self, model_override: Optional[str] = None):
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        upstage_key = os.getenv("UPSTAGE_API_KEY")
+        if openrouter_key and model_override:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=model_override,
+                api_key=openrouter_key,
+                base_url="https://openrouter.ai/api/v1",
+                default_headers={
+                    "HTTP-Referer": "https://github.com/rlaghwo730/pocat-project",
+                    "X-Title": "PoCat5-Insurance-Agent",
+                },
+            )
+        if upstage_key:
+            from langchain_upstage import ChatUpstage
+            return ChatUpstage(model="solar-pro")
+        raise ValueError("API 키 없음")
 
     def _retrieve_context(self, request: dict) -> str:
         doc_req = request["document_request"]
@@ -223,6 +232,8 @@ class GenerationAgent:
         return "\n".join(lines)
 
     def generate(self, request: dict) -> dict:
+        model_override = request.get("model")
+        llm = self._get_llm(model_override)
         request = _deep_merge(self._defaults, request)
         doc_req = request["document_request"]
         coverage = request["coverage_conditions"]
@@ -230,7 +241,7 @@ class GenerationAgent:
         context = self._retrieve_context(request)
         legal_context = self._retrieve_legal_context(request)
         prompt = self._build_generation_prompt(request, context, legal_context)
-        response = self.llm.invoke(
+        response = llm.invoke(
             [
                 SystemMessage(content=_GENERATION_SYSTEM),
                 HumanMessage(content=prompt),
@@ -249,6 +260,8 @@ class GenerationAgent:
         }
 
     def generate_product_description(self, clause_content: str, request: dict) -> str:
+        model_override = request.get("model")
+        llm = self._get_llm(model_override)
         doc_req = request["document_request"]
         design = request["product_design_conditions"]
         coverage = request["coverage_conditions"]
@@ -301,7 +314,7 @@ class GenerationAgent:
             "5. 유의사항",
         ]
 
-        response = self.llm.invoke(
+        response = llm.invoke(
             [
                 SystemMessage(content=_DESCRIPTION_SYSTEM),
                 HumanMessage(content="\n".join(prompt_lines)),
@@ -311,6 +324,8 @@ class GenerationAgent:
         return response.content
 
     def regenerate(self, request: dict, feedback: dict, iteration: int) -> dict:
+        model_override = request.get("model")
+        llm = self._get_llm(model_override)
         request = _deep_merge(self._defaults, request)
         doc_req = request["document_request"]
         coverage = request["coverage_conditions"]
@@ -326,7 +341,7 @@ class GenerationAgent:
             f"아래 항목을 반드시 수정하여 약관을 재작성하세요:\n{fixes_text}\n"
         )
 
-        response = self.llm.invoke(
+        response = llm.invoke(
             [
                 SystemMessage(content=_GENERATION_SYSTEM),
                 HumanMessage(content=base_prompt + regeneration_section),

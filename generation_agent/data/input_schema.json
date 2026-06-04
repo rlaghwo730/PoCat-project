@@ -1,0 +1,39 @@
+{
+  "document_request": {
+    "document_type": "약관",
+    "insurance_company": "삼성화재",
+    "insurance_type": "일반 실손의료비보험",
+    "product_name": "무배당 삼성화재 실손의료비보험",
+    "product_version": "2024",
+    "dividend_type": "무배당"
+  },
+  "product_design_conditions": {
+    "policy_period": "1년",
+    "premium_payment_period": "1년",
+    "premium_payment_cycle": "월납",
+    "renewal_type": "자동갱신",
+    "renewal_period": "1년",
+    "max_coverage_age": 100,
+    "join_age_range": "0세~65세",
+    "mandatory_enrollment": "해당없음",
+    "fetal_enrollment": "가능",
+    "policy_loan": "가능"
+  },
+  "coverage_conditions": {
+    "basic_coverage_items": ["급여 입원의료비", "급여 통원의료비"],
+    "noncovered_rider_items": [],
+    "three_major_noncovered_items": [],
+    "coverage_limit": {
+      "급여": "5천만원",
+      "비급여": "5천만원",
+      "도수치료": "350만원",
+      "주사료": "250만원",
+      "MRI": "300만원"
+    },
+    "deductible_rule": "입원 10%, 통원 2만원(급여) / 3만원(비급여)"
+  },
+  "applicant_info": {
+    "applicant_type": "본인"
+  },
+  "session_id": ""
+}

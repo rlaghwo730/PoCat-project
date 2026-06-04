@@ -14,12 +14,12 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .types import State
-from ..agents.agents import coordinator_llm, planner_llm, supervisor_llm, edit_llm
+from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor_llm, get_edit_llm
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +63,14 @@ def _get_compliance_agent():
 
 # ── 노드 함수 ─────────────────────────────────────────────────────────────────
 
-async def coordinator_node(state: State) -> dict:
+async def coordinator_node(state: State, model_override: Optional[str] = None) -> dict:
     """요청 분석 및 유효성 검증"""
+    llm = get_coordinator_llm(model_override)
     messages = [
         SystemMessage(content=_prompt("coordinator")),
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
-    response = await coordinator_llm.ainvoke(messages)
+    response = await llm.ainvoke(messages)
     logger.info("[coordinator] %s", response.content[:80])
     return {
         "messages": state.get("messages", []) + [
@@ -78,13 +79,14 @@ async def coordinator_node(state: State) -> dict:
     }
 
 
-async def planner_node(state: State) -> dict:
+async def planner_node(state: State, model_override: Optional[str] = None) -> dict:
     """작업 전략 수립"""
+    llm = get_planner_llm(model_override)
     messages = [
         SystemMessage(content=_prompt("planner")),
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
-    response = await planner_llm.ainvoke(messages)
+    response = await llm.ainvoke(messages)
     logger.info("[planner] %s", response.content[:80])
     return {
         "messages": state["messages"] + [
@@ -93,7 +95,7 @@ async def planner_node(state: State) -> dict:
     }
 
 
-async def supervisor_node(state: State) -> dict:
+async def supervisor_node(state: State, model_override: Optional[str] = None) -> dict:
     """중앙 허브 — last_role을 보고 next_step을 결정한 뒤 LLM으로 이유를 생성"""
     msgs = state.get("messages", [])
     last_role = msgs[-1]["role"] if msgs else "planner"
@@ -143,11 +145,12 @@ async def supervisor_node(state: State) -> dict:
         "violations_count": len(violations),
         "status":           updated_status,
     }
+    llm = get_supervisor_llm(model_override)
     llm_messages = [
         SystemMessage(content=_prompt("supervisor")),
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
-    response = await supervisor_llm.ainvoke(llm_messages)
+    response = await llm.ainvoke(llm_messages)
     logger.info("[supervisor] %s → next=%s", situation, next_step)
 
     extra: dict = {}
@@ -164,7 +167,7 @@ async def supervisor_node(state: State) -> dict:
     }
 
 
-async def generation_node(state: State) -> dict:
+async def generation_node(state: State, model_override: Optional[str] = None) -> dict:
     """약관 초안 생성 — GenerationAgent 재활용"""
     agent = _get_generation_agent()
     iteration = state.get("iteration", 0)
@@ -194,7 +197,7 @@ async def generation_node(state: State) -> dict:
     }
 
 
-async def compliance_node(state: State) -> dict:
+async def compliance_node(state: State, model_override: Optional[str] = None) -> dict:
     """법규 준수 검증 — ComplianceAgent 재활용"""
     from compliance_agent.models.violation import DetectionInput, CoverageContext
 
@@ -245,8 +248,9 @@ async def compliance_node(state: State) -> dict:
     }
 
 
-async def edit_node(state: State) -> dict:
+async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
     """위반 항목만 부분 수정 + 상품설명서 생성"""
+    llm        = get_edit_llm(model_override)
     agent      = _get_generation_agent()
     violations = state.get("violations", [])
     draft      = state["draft_content"]
@@ -274,7 +278,7 @@ async def edit_node(state: State) -> dict:
             SystemMessage(content=_prompt("edit")),
             HumanMessage(content=edit_prompt),
         ]
-        response      = await edit_llm.ainvoke(llm_msgs)
+        response      = await llm.ainvoke(llm_msgs)
         final_content = response.content
     else:
         # 위반 없음 — 원문 그대로 사용

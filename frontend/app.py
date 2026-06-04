@@ -2,12 +2,15 @@
 실손의료보험 약관 초안 작성 — LangManus 아키텍처 프론트엔드
 백엔드: http://localhost:8000 (FastAPI + LangGraph)
 """
+import asyncio
 import json
 import os
 from datetime import date
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
+import aiohttp
 import requests
 from dotenv import load_dotenv
 
@@ -17,6 +20,13 @@ import streamlit as st
 
 MAX_ITERATIONS = 3
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openai/gpt-oss-120b:free",
+    "openai/gpt-oss-20b:free",
+    "z-ai/glm-4.5-air:free",
+]
 
 st.set_page_config(
     page_title="실손의료보험 약관 초안 작성 에이전트",
@@ -243,7 +253,7 @@ def get_field_value(field):
     return value
 
 
-def build_request() -> dict:
+def build_request(model: Optional[str] = None) -> dict:
     flat = {}
     for step in steps:
         for field in step["fields"]:
@@ -287,7 +297,45 @@ def build_request() -> dict:
             "applicant_type": flat.get("applicant_type", "본인"),
         },
         "session_id": st.session_state.session_id,
+        "model": model,
     }
+
+
+def best_result(results: list[dict]) -> dict:
+    """
+    4개 모델 결과 중 가장 좋은 결과 1개 반환.
+    1순위: status == COMPLIANCE_PASSED
+    2순위: iteration 적은 것
+    3순위: violations_for_ui 수 적은 것
+    4순위: 첫 번째
+    """
+    passed = [r for r in results if r.get("status") == "COMPLIANCE_PASSED"]
+    pool = passed if passed else results
+    return min(pool, key=lambda r: (
+        r.get("iteration", 99),
+        len(r.get("violations_for_ui", [])),
+    ))
+
+
+async def _post_one(session: aiohttp.ClientSession, model_id: str) -> dict:
+    payload = build_request(model=model_id)
+    payload["session_id"] = str(uuid4())
+    try:
+        async with session.post(
+            f"{BACKEND_URL}/generate",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=300),
+        ) as r:
+            data = await r.json()
+            data["model_used"] = model_id
+            return data
+    except Exception as e:
+        return {"status": "ORCHESTRATOR_ERROR", "error": str(e), "model_used": model_id}
+
+
+async def _run_parallel() -> list[dict]:
+    async with aiohttp.ClientSession() as session:
+        return list(await asyncio.gather(*[_post_one(session, m) for m in MODELS]))
 
 
 # ── 위반 하이라이트 ───────────────────────────────────────────────────────────
@@ -321,6 +369,7 @@ st.divider()
 col_form, col_result = st.columns([4, 6], gap="large")
 
 generate_btn = False
+run_all_btn = False
 
 with col_form:
     current_step = st.session_state.current_step
@@ -354,10 +403,17 @@ with col_form:
         else:
             basic_items = st.session_state.get("basic_coverage_items", [])
             generate_btn = st.button(
-                "약관 초안 생성",
+                "⚡ 약관 초안 생성 (Upstage)",
                 type="primary",
                 use_container_width=True,
                 disabled=not basic_items,
+                help="Upstage Solar 단일 모델로 빠르게 생성"
+            )
+            run_all_btn = st.button(
+                "🔄 4개 모델 병렬 실행 (OpenRouter)",
+                use_container_width=True,
+                disabled=not basic_items,
+                help="OpenRouter 무료 모델 4개 병렬 실행 (일일 한도 50회)"
             )
             if not basic_items:
                 st.warning("기본 보장종목을 하나 이상 선택하세요.")
@@ -367,40 +423,45 @@ with col_form:
 with col_result:
     st.subheader("생성된 약관 초안")
 
-    if generate_btn:
-        session_id = st.session_state.session_id
-        request = build_request()
-
+    if generate_btn or run_all_btn:
         fetal_enrollment = st.session_state.get("_saved_fetal_enrollment", "가능")
-        applicant_type   = st.session_state.get("applicant_type", "본인")
+        applicant_type = st.session_state.get("applicant_type", "본인")
         if fetal_enrollment == "불가" and applicant_type == "태아":
             st.error("⚠️ 태아 가입이 불가능합니다.")
         else:
             try:
-                with st.status("약관 초안 생성 중...", expanded=True) as status:
-                    st.write("백엔드 LangGraph 워크플로우 실행 중...")
-                    resp = requests.post(
-                        f"{BACKEND_URL}/generate",
-                        json=request,
-                        timeout=300,
+                if generate_btn:
+                    request = build_request(model=None)
+                    with st.status("약관 초안 생성 중...", expanded=True) as status_box:
+                        st.write("Upstage Solar 모델로 생성 중...")
+                        resp = requests.post(f"{BACKEND_URL}/generate", json=request, timeout=300)
+                        resp.raise_for_status()
+                        result = resp.json()
+                        model_used = result.get("model_used", "Upstage Solar")
+                        st.write(f"✅ 생성 완료: {model_used}")
+                else:
+                    with st.status("약관 초안 생성 중...", expanded=True) as status_box:
+                        st.write("4개 모델 병렬 실행 중...")
+                        all_results = asyncio.run(_run_parallel())
+                        result = best_result(all_results)
+                        model_used = result.get("model_used", "unknown")
+                        st.write(f"✅ 최적 모델 선택: {model_used}")
+
+                final_status = result["status"]
+                if final_status == "COMPLIANCE_PASSED":
+                    status_box.update(
+                        label=f"약관 초안 생성 완료 — {result['iteration']}회 검토 통과 ({model_used})",
+                        state="complete",
                     )
-                    resp.raise_for_status()
-                    result = resp.json()
+                elif final_status == "MANUAL_REVIEW_REQUIRED":
+                    status_box.update(
+                        label=f"최대 {MAX_ITERATIONS}회 도달 — 수동 검토 필요",
+                        state="error",
+                    )
+                else:
+                    status_box.update(label="오류 발생", state="error")
 
-                    final_status = result["status"]
-                    if final_status == "COMPLIANCE_PASSED":
-                        status.update(
-                            label=f"약관 초안 생성 완료 — {result['iteration']}회 검토 통과",
-                            state="complete",
-                        )
-                    elif final_status == "MANUAL_REVIEW_REQUIRED":
-                        status.update(
-                            label=f"최대 {MAX_ITERATIONS}회 도달 — 수동 검토 필요",
-                            state="error",
-                        )
-                    else:
-                        status.update(label="오류 발생", state="error")
-
+                session_id = st.session_state.session_id
                 if final_status == "COMPLIANCE_PASSED":
                     st.success(
                         f"✅ 법규 검토 통과 — {result['iteration']}회 만에 완료 "
@@ -444,21 +505,6 @@ with col_result:
                 with tab_biz:
                     st.markdown(result.get("business_method", ""))
 
-            except requests.exceptions.ConnectionError:
-                st.error(
-                    f"백엔드 서버에 연결할 수 없습니다. "
-                    f"`python backend/main.py` 로 서버를 먼저 실행하세요. "
-                    f"(URL: {BACKEND_URL})"
-                )
-            except requests.exceptions.Timeout:
-                st.error("요청 시간 초과 (300초). 서버 부하를 확인하거나 다시 시도하세요.")
-            except requests.exceptions.HTTPError as e:
-                detail = ""
-                try:
-                    detail = e.response.json().get("detail", e.response.text)
-                except Exception:
-                    detail = e.response.text
-                st.error(f"API 오류 {e.response.status_code}: {detail}")
             except Exception as e:
                 st.error(f"오류 발생: {e}")
                 st.exception(e)

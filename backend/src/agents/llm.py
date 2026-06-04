@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -7,19 +8,19 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _MODEL_MAP = {
-    "basic":      "meta-llama/llama-3.1-8b-instruct:free",
-    "reasoning":  "anthropic/claude-3.5-sonnet",
-    "supervisor": "openai/gpt-4o",
+    "basic":      "openai/gpt-oss-120b:free",
+    "reasoning":  "openai/gpt-oss-120b:free",
+    "supervisor": "openai/gpt-oss-120b:free",
 }
 
 
-def get_llm_by_type(llm_type: str):
+def get_llm_by_type(llm_type: str, model_override: Optional[str] = None):
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     upstage_key = os.getenv("UPSTAGE_API_KEY")
 
     if openrouter_key:
         from langchain_openai import ChatOpenAI
-        model = _MODEL_MAP.get(llm_type, _MODEL_MAP["basic"])
+        model = model_override or _MODEL_MAP.get(llm_type, _MODEL_MAP["basic"])
         logger.info("[LLM] OpenRouter 사용: %s", model)
         return ChatOpenAI(
             model=model,

@@ -7,6 +7,8 @@
   supervisor → edit       → supervisor
   supervisor → END
 """
+from typing import Optional
+
 from langgraph.graph import StateGraph, END
 
 from .types import State
@@ -21,16 +23,23 @@ from .nodes import (
 )
 
 
-def build_graph():
+def build_graph(model_override: Optional[str] = None):
     graph = StateGraph(State)
 
     # 노드 등록
-    graph.add_node("coordinator", coordinator_node)
-    graph.add_node("planner",     planner_node)
-    graph.add_node("supervisor",  supervisor_node)
-    graph.add_node("generation",  generation_node)
-    graph.add_node("compliance",  compliance_node)
-    graph.add_node("edit",        edit_node)
+    async def _coordinator(s): return await coordinator_node(s, model_override)
+    async def _planner(s):     return await planner_node(s, model_override)
+    async def _supervisor(s):  return await supervisor_node(s, model_override)
+    async def _generation(s):  return await generation_node(s, model_override)
+    async def _compliance(s):  return await compliance_node(s, model_override)
+    async def _edit(s):        return await edit_node(s, model_override)
+
+    graph.add_node("coordinator", _coordinator)
+    graph.add_node("planner",     _planner)
+    graph.add_node("supervisor",  _supervisor)
+    graph.add_node("generation",  _generation)
+    graph.add_node("compliance",  _compliance)
+    graph.add_node("edit",        _edit)
 
     # 진입점 → coordinator → planner → supervisor(허브)
     graph.set_entry_point("coordinator")

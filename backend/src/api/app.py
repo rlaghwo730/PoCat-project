@@ -50,6 +50,7 @@ class GenerateRequest(BaseModel):
     coverage_conditions:       dict
     applicant_info:            dict
     session_id:                str = Field(default="", description="세션 ID (빈 값이면 서버에서 자동 생성)")
+    model:                     Optional[str] = Field(default=None, description="OpenRouter 모델 ID")
 
 
 class ViolationUI(BaseModel):
@@ -77,6 +78,7 @@ class GenerateResponse(BaseModel):
     business_method:     str
     improvement_note:    str
     db_warning:          Optional[str] = None
+    model_used:          Optional[str] = None
 
 
 # ── 미들웨어: 요청 ID 로깅 ─────────────────────────────────────────────────────
