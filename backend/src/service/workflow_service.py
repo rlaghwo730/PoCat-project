@@ -161,6 +161,27 @@ async def run_workflow(request: dict) -> dict:
     """
     model_override: Optional[str] = request.get("model")
     # request에 "model" 키를 유지해서 GenerationAgent까지 전달되게 함
+
+    # Langfuse 세션 태그 설정 (모델별 구분용)
+    try:
+        import os
+        from langfuse import Langfuse
+        lf = Langfuse(
+            public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+            secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+            host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        )
+        lf.trace(
+            name="insurance-policy-generation",
+            session_id=request.get("session_id", ""),
+            tags=[model_override or "upstage-solar", "pocat5"],
+            metadata={"model": model_override or "upstage-solar"},
+        )
+        lf.flush()
+        logger.info("[Langfuse] trace 생성 완료: model=%s", model_override or "upstage-solar")
+    except Exception as e:
+        logger.warning("[Langfuse] trace 생성 실패: %s", e)
+
     db_warning = _check_db_warning()
 
     # ── State 초기값 ──────────────────────────────────────────────────────────
