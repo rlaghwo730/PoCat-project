@@ -7,9 +7,6 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langfuse import Langfuse
-from langfuse.langchain import CallbackHandler
-
 from rag.document_loader import get_vectorstore
 
 load_dotenv()
@@ -55,8 +52,6 @@ class GenerationAgent:
         self._defaults = _load_default_schema()
         vectorstore = get_vectorstore()
         self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-        self.langfuse = Langfuse()
-        self.langfuse_handler = CallbackHandler()
         self._db_url = os.getenv("DB_API_URL")
 
     def _get_llm(self, model_override: Optional[str] = None):
@@ -245,8 +240,7 @@ class GenerationAgent:
             [
                 SystemMessage(content=_GENERATION_SYSTEM),
                 HumanMessage(content=prompt),
-            ],
-            config={"callbacks": [self.langfuse_handler]},
+            ]
         )
 
         return {
@@ -318,8 +312,7 @@ class GenerationAgent:
             [
                 SystemMessage(content=_DESCRIPTION_SYSTEM),
                 HumanMessage(content="\n".join(prompt_lines)),
-            ],
-            config={"callbacks": [self.langfuse_handler]},
+            ]
         )
         return response.content
 
@@ -345,8 +338,7 @@ class GenerationAgent:
             [
                 SystemMessage(content=_GENERATION_SYSTEM),
                 HumanMessage(content=base_prompt + regeneration_section),
-            ],
-            config={"callbacks": [self.langfuse_handler]},
+            ]
         )
 
         return {

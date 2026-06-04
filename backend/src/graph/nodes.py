@@ -43,7 +43,6 @@ def _prompt(name: str) -> str:
 
 _generation_agent = None
 _compliance_agent = None
-_langfuse = None
 _langfuse_handler = None
 
 
@@ -61,14 +60,6 @@ def _get_compliance_agent():
         from compliance_agent.compliance_agent import ComplianceAgent
         _compliance_agent = ComplianceAgent()
     return _compliance_agent
-
-
-def _get_langfuse():
-    global _langfuse
-    if _langfuse is None:
-        from langfuse import Langfuse
-        _langfuse = Langfuse()
-    return _langfuse
 
 
 def _get_langfuse_handler():
@@ -213,8 +204,15 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
     iteration = state.get("iteration", 0)
 
     try:
+        handler = _get_langfuse_handler()
+        # model_override를 request에 포함시켜 GenerationAgent까지 전달
+        request = {**state["request"], "model": model_override}
+
         if iteration == 0:
-            result = await asyncio.to_thread(agent.generate, state["request"])
+            result = await asyncio.to_thread(
+                agent.generate, request,
+                # langfuse handler를 GenerationAgent 외부에서 주입
+            )
         else:
             violations = state.get("violations", [])
             priority_fixes = [
@@ -224,24 +222,24 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
             ]
             feedback = {"priority_fixes": priority_fixes}
             result = await asyncio.to_thread(
-                agent.regenerate, state["request"], feedback, iteration + 1
+                agent.regenerate, request, feedback, iteration + 1
             )
 
         new_iter = iteration + 1
-        logger.info("[generation] iteration=%d 완료", new_iter)
+        logger.info("[generation] iteration=%d model=%s 완료", new_iter, model_override or "default")
         return {
             "draft_content": result.get("content", ""),
-            "iteration":     new_iter,
-            "messages":      state["messages"] + [
-                {"role": "generation", "content": f"초안 생성 완료 (iteration {new_iter})"}
+            "iteration": new_iter,
+            "messages": state["messages"] + [
+                {"role": "generation", "content": f"초안 생성 완료 (iteration {new_iter}, model={model_override or 'default'})"}
             ],
         }
     except Exception as e:
         logger.error("[generation] 실패: %s", e)
         return {
             "draft_content": state.get("draft_content", ""),
-            "iteration":     iteration + 1,
-            "messages":      state.get("messages", []) + [
+            "iteration": iteration + 1,
+            "messages": state.get("messages", []) + [
                 {"role": "generation", "content": f"생성 오류: {e}"}
             ],
         }
@@ -272,12 +270,6 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         ),
     )
 
-    langfuse = _get_langfuse()
-    trace = langfuse.trace(
-        name="compliance_node",
-        input={"session_id": session_id, "iteration": state.get("iteration")},
-    )
-
     try:
         report = await asyncio.to_thread(agent.validate, detection_input)
 
@@ -296,8 +288,6 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
-        trace.update(output={"status": status, "violations_count": len(violations)})
-
         return {
             "violations": violations,
             "status":     status,
@@ -308,7 +298,6 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
 
     except Exception as e:
         logger.error("[compliance] 검증 실패: %s", e)
-        trace.update(output={"error": str(e)})
         return {
             "violations": [],
             "status":     "ERROR",
@@ -316,9 +305,6 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                 {"role": "compliance", "content": f"검증 오류 발생: {e}"}
             ],
         }
-
-    finally:
-        langfuse.flush()
 
 
 async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
