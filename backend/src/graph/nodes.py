@@ -39,10 +39,12 @@ def _prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-# ── 기존 에이전트 지연 초기화 ─────────────────────────────────────────────────
+# ── 지연 초기화 ───────────────────────────────────────────────────────────────
 
 _generation_agent = None
 _compliance_agent = None
+_langfuse = None
+_langfuse_handler = None
 
 
 def _get_generation_agent():
@@ -61,6 +63,22 @@ def _get_compliance_agent():
     return _compliance_agent
 
 
+def _get_langfuse():
+    global _langfuse
+    if _langfuse is None:
+        from langfuse import Langfuse
+        _langfuse = Langfuse()
+    return _langfuse
+
+
+def _get_langfuse_handler():
+    global _langfuse_handler
+    if _langfuse_handler is None:
+        from langfuse.langchain import CallbackHandler
+        _langfuse_handler = CallbackHandler()
+    return _langfuse_handler
+
+
 # ── 노드 함수 ─────────────────────────────────────────────────────────────────
 
 async def coordinator_node(state: State, model_override: Optional[str] = None) -> dict:
@@ -70,13 +88,22 @@ async def coordinator_node(state: State, model_override: Optional[str] = None) -
         SystemMessage(content=_prompt("coordinator")),
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
-    response = await llm.ainvoke(messages)
-    logger.info("[coordinator] %s", response.content[:80])
-    return {
-        "messages": state.get("messages", []) + [
-            {"role": "coordinator", "content": response.content}
-        ]
-    }
+    try:
+        handler = _get_langfuse_handler()
+        response = await llm.ainvoke(messages, config={"callbacks": [handler]})
+        logger.info("[coordinator] %s", response.content[:80])
+        return {
+            "messages": state.get("messages", []) + [
+                {"role": "coordinator", "content": response.content}
+            ]
+        }
+    except Exception as e:
+        logger.error("[coordinator] 실패: %s", e)
+        return {
+            "messages": state.get("messages", []) + [
+                {"role": "coordinator", "content": f"coordinator 오류: {e}"}
+            ]
+        }
 
 
 async def planner_node(state: State, model_override: Optional[str] = None) -> dict:
@@ -86,13 +113,22 @@ async def planner_node(state: State, model_override: Optional[str] = None) -> di
         SystemMessage(content=_prompt("planner")),
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
-    response = await llm.ainvoke(messages)
-    logger.info("[planner] %s", response.content[:80])
-    return {
-        "messages": state["messages"] + [
-            {"role": "planner", "content": response.content}
-        ]
-    }
+    try:
+        handler = _get_langfuse_handler()
+        response = await llm.ainvoke(messages, config={"callbacks": [handler]})
+        logger.info("[planner] %s", response.content[:80])
+        return {
+            "messages": state["messages"] + [
+                {"role": "planner", "content": response.content}
+            ]
+        }
+    except Exception as e:
+        logger.error("[planner] 실패: %s", e)
+        return {
+            "messages": state.get("messages", []) + [
+                {"role": "planner", "content": f"planner 오류: {e}"}
+            ]
+        }
 
 
 async def supervisor_node(state: State, model_override: Optional[str] = None) -> dict:
@@ -150,19 +186,23 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         SystemMessage(content=_prompt("supervisor")),
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
-    response = await llm.ainvoke(llm_messages)
-    logger.info("[supervisor] %s → next=%s", situation, next_step)
-
     extra: dict = {}
     if next_step == "end" and last_role == "compliance" and status == "PASS":
         extra["final_content"] = state.get("draft_content", "")
 
+    try:
+        handler = _get_langfuse_handler()
+        response = await llm.ainvoke(llm_messages, config={"callbacks": [handler]})
+        logger.info("[supervisor] %s → next=%s", situation, next_step)
+        supervisor_comment = f"[→{next_step.upper()}] {response.content}"
+    except Exception as e:
+        logger.error("[supervisor] LLM 실패: %s", e)
+        supervisor_comment = f"[→{next_step.upper()}] supervisor 오류: {e}"
+
     return {
         "next_step":  next_step,
         "status":     updated_status,
-        "messages":   msgs + [
-            {"role": "supervisor", "content": f"[→{next_step.upper()}] {response.content}"}
-        ],
+        "messages":   msgs + [{"role": "supervisor", "content": supervisor_comment}],
         **extra,
     }
 
@@ -172,29 +212,39 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
     agent = _get_generation_agent()
     iteration = state.get("iteration", 0)
 
-    if iteration == 0:
-        result = await asyncio.to_thread(agent.generate, state["request"])
-    else:
-        violations = state.get("violations", [])
-        priority_fixes = [
-            f"{v.get('type', 'UNKNOWN')}: \"{v.get('original_text', '')[:80]}\" "
-            f"→ {v.get('reason', v.get('regulation', ''))}"
-            for v in violations[:5]
-        ]
-        feedback = {"priority_fixes": priority_fixes}
-        result = await asyncio.to_thread(
-            agent.regenerate, state["request"], feedback, iteration + 1
-        )
+    try:
+        if iteration == 0:
+            result = await asyncio.to_thread(agent.generate, state["request"])
+        else:
+            violations = state.get("violations", [])
+            priority_fixes = [
+                f"{v.get('type', 'UNKNOWN')}: \"{v.get('original_text', '')[:80]}\" "
+                f"→ {v.get('reason', v.get('regulation', ''))}"
+                for v in violations[:5]
+            ]
+            feedback = {"priority_fixes": priority_fixes}
+            result = await asyncio.to_thread(
+                agent.regenerate, state["request"], feedback, iteration + 1
+            )
 
-    new_iter = iteration + 1
-    logger.info("[generation] iteration=%d 완료", new_iter)
-    return {
-        "draft_content": result.get("content", ""),
-        "iteration":     new_iter,
-        "messages":      state["messages"] + [
-            {"role": "generation", "content": f"초안 생성 완료 (iteration {new_iter})"}
-        ],
-    }
+        new_iter = iteration + 1
+        logger.info("[generation] iteration=%d 완료", new_iter)
+        return {
+            "draft_content": result.get("content", ""),
+            "iteration":     new_iter,
+            "messages":      state["messages"] + [
+                {"role": "generation", "content": f"초안 생성 완료 (iteration {new_iter})"}
+            ],
+        }
+    except Exception as e:
+        logger.error("[generation] 실패: %s", e)
+        return {
+            "draft_content": state.get("draft_content", ""),
+            "iteration":     iteration + 1,
+            "messages":      state.get("messages", []) + [
+                {"role": "generation", "content": f"생성 오류: {e}"}
+            ],
+        }
 
 
 async def compliance_node(state: State, model_override: Optional[str] = None) -> dict:
@@ -222,30 +272,53 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         ),
     )
 
-    report = await asyncio.to_thread(agent.validate, detection_input)
+    langfuse = _get_langfuse()
+    trace = langfuse.trace(
+        name="compliance_node",
+        input={"session_id": session_id, "iteration": state.get("iteration")},
+    )
 
-    violations = [
-        {
-            "violation_id": v.violation_id,
-            "type":         str(v.type.value) if hasattr(v.type, "value") else str(v.type),
-            "severity":     str(v.severity.value) if hasattr(v.severity, "value") else str(v.severity),
-            "original_text": v.original_text,
-            "regulation":   v.regulation,
-            "reason":       v.reason,
-            "manual_flag":  v.manual_flag,
+    try:
+        report = await asyncio.to_thread(agent.validate, detection_input)
+
+        violations = [
+            {
+                "violation_id": v.violation_id,
+                "type":         str(v.type.value) if hasattr(v.type, "value") else str(v.type),
+                "severity":     str(v.severity.value) if hasattr(v.severity, "value") else str(v.severity),
+                "original_text": v.original_text,
+                "regulation":   v.regulation,
+                "reason":       v.reason,
+                "manual_flag":  v.manual_flag,
+            }
+            for v in report.violations
+        ]
+        status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
+        logger.info("[compliance] status=%s violations=%d", status, len(violations))
+
+        trace.update(output={"status": status, "violations_count": len(violations)})
+
+        return {
+            "violations": violations,
+            "status":     status,
+            "messages":   state["messages"] + [
+                {"role": "compliance", "content": f"검증 완료: {status} (위반 {len(violations)}건)"}
+            ],
         }
-        for v in report.violations
-    ]
-    status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
-    logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
-    return {
-        "violations": violations,
-        "status":     status,
-        "messages":   state["messages"] + [
-            {"role": "compliance", "content": f"검증 완료: {status} (위반 {len(violations)}건)"}
-        ],
-    }
+    except Exception as e:
+        logger.error("[compliance] 검증 실패: %s", e)
+        trace.update(output={"error": str(e)})
+        return {
+            "violations": [],
+            "status":     "ERROR",
+            "messages":   state["messages"] + [
+                {"role": "compliance", "content": f"검증 오류 발생: {e}"}
+            ],
+        }
+
+    finally:
+        langfuse.flush()
 
 
 async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
@@ -255,50 +328,59 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
     violations = state.get("violations", [])
     draft      = state["draft_content"]
 
-    if violations:
-        # 위반 항목별 수정 지시서 구성
-        fix_items = []
-        for i, v in enumerate(violations, 1):
-            fix_items.append(
-                f"[수정 {i}]\n"
-                f"- 위반 유형: {v.get('type', '')}\n"
-                f"- 원문: \"{v.get('original_text', '')}\"\n"
-                f"- 근거 법령: {v.get('regulation', '')}\n"
-                f"- 수정 사유: {v.get('reason', '')}"
+    try:
+        if violations:
+            fix_items = []
+            for i, v in enumerate(violations, 1):
+                fix_items.append(
+                    f"[수정 {i}]\n"
+                    f"- 위반 유형: {v.get('type', '')}\n"
+                    f"- 원문: \"{v.get('original_text', '')}\"\n"
+                    f"- 근거 법령: {v.get('regulation', '')}\n"
+                    f"- 수정 사유: {v.get('reason', '')}"
+                )
+
+            edit_prompt = (
+                f"다음 약관에서 지정된 위반 항목만 최소한으로 수정하세요. "
+                f"다른 내용은 절대 변경하지 마세요.\n\n"
+                f"=== 약관 전문 ===\n{draft}\n\n"
+                f"=== 수정 대상 ({len(violations)}건) ===\n"
+                + "\n\n".join(fix_items)
             )
+            llm_msgs = [
+                SystemMessage(content=_prompt("edit")),
+                HumanMessage(content=edit_prompt),
+            ]
+            handler = _get_langfuse_handler()
+            response      = await llm.ainvoke(llm_msgs, config={"callbacks": [handler]})
+            final_content = response.content
+        else:
+            final_content = draft
 
-        edit_prompt = (
-            f"다음 약관에서 지정된 위반 항목만 최소한으로 수정하세요. "
-            f"다른 내용은 절대 변경하지 마세요.\n\n"
-            f"=== 약관 전문 ===\n{draft}\n\n"
-            f"=== 수정 대상 ({len(violations)}건) ===\n"
-            + "\n\n".join(fix_items)
+        product_description = await asyncio.to_thread(
+            agent.generate_product_description, final_content, state["request"]
         )
-        llm_msgs = [
-            SystemMessage(content=_prompt("edit")),
-            HumanMessage(content=edit_prompt),
-        ]
-        response      = await llm.ainvoke(llm_msgs)
-        final_content = response.content
-    else:
-        # 위반 없음 — 원문 그대로 사용
-        final_content = draft
 
-    product_description = await asyncio.to_thread(
-        agent.generate_product_description, final_content, state["request"]
-    )
-
-    logger.info("[edit] 부분 수정 완료 violations=%d", len(violations))
-    return {
-        "final_content":      final_content,
-        "product_description": product_description,
-        "messages": state["messages"] + [
-            {
-                "role": "edit",
-                "content": f"부분 수정 완료 ({len(violations)}건) + 상품설명서 생성",
-            }
-        ],
-    }
+        logger.info("[edit] 부분 수정 완료 violations=%d", len(violations))
+        return {
+            "final_content":       final_content,
+            "product_description": product_description,
+            "messages": state["messages"] + [
+                {
+                    "role": "edit",
+                    "content": f"부분 수정 완료 ({len(violations)}건) + 상품설명서 생성",
+                }
+            ],
+        }
+    except Exception as e:
+        logger.error("[edit] 실패: %s", e)
+        return {
+            "final_content":       draft,
+            "product_description": "",
+            "messages": state.get("messages", []) + [
+                {"role": "edit", "content": f"편집 오류: {e}"}
+            ],
+        }
 
 
 # ── 라우터 ────────────────────────────────────────────────────────────────────

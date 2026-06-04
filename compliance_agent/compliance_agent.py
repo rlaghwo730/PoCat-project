@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from compliance_agent.detection_engine.violation_detector import ViolationDetector
@@ -49,7 +50,7 @@ class ComplianceAgent:
                 "coverage_context 주입됨 → missing_req/contradiction 동적 체크 활성화"
             )
 
-        detection_result = self._detector.detect(input_data)
+        detection_result = asyncio.run(self._detector.detect(input_data))
         tracker.record(detection_result.violations)
 
         # SOFT_LOOP: 3회 연속 등장한 violation을 사전에 MANUAL_FLAG 처리 (루프는 계속)
