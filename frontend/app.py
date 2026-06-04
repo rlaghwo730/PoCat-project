@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import aiohttp
 import requests
+import sseclient
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -431,12 +432,52 @@ with col_result:
         else:
             try:
                 if generate_btn:
-                    request = build_request(model=None)
                     with st.status("약관 초안 생성 중...", expanded=True) as status_box:
-                        st.write("Upstage Solar 모델로 생성 중...")
-                        resp = requests.post(f"{BACKEND_URL}/generate", json=request, timeout=300)
-                        resp.raise_for_status()
-                        result = resp.json()
+                        # SSE 스트리밍으로 노드별 진행상황 실시간 표시
+                        request = build_request(model=None)
+
+                        response = requests.post(
+                            f"{BACKEND_URL}/generate/stream",
+                            json=request,
+                            stream=True,
+                            timeout=300,
+                        )
+                        response.raise_for_status()
+
+                        client = sseclient.SSEClient(response)
+                        result = None
+
+                        for event in client.events():
+                            if event.data == "[DONE]":
+                                break
+
+                            data = json.loads(event.data)
+
+                            if data.get("type") == "progress":
+                                node = data.get("node", "")
+                                iteration = data.get("iteration", 0)
+
+                                node_emoji = {
+                                    "coordinator": "🔍",
+                                    "planner": "📋",
+                                    "supervisor": "🎯",
+                                    "generation": "✍️",
+                                    "compliance": "⚖️",
+                                    "edit": "✏️",
+                                }.get(node, "⚙️")
+
+                                if node:
+                                    st.write(f"{node_emoji} **{node}** 완료 (iteration {iteration})")
+
+                            elif data.get("type") == "result":
+                                result = data
+
+                            elif data.get("type") == "error":
+                                raise Exception(data.get("message", "스트리밍 오류"))
+
+                        if result is None:
+                            raise Exception("결과를 받지 못했습니다.")
+
                         model_used = result.get("model_used", "Upstage Solar")
                         st.write(f"✅ 생성 완료: {model_used}")
                 else:
