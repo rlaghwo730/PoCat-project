@@ -3,47 +3,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
+import os
 
 import asyncio
 
 from ..graph.builder import build_graph
-from ..graph.nodes import _get_generation_agent
 from ..graph.types import State
 
 logger = logging.getLogger(__name__)
 
-# PoCat-project 루트: backend/src/service/workflow_service.py 기준 4단계 상위
-_ROOT = Path(__file__).parent.parent.parent.parent
-
 
 # ── 헬퍼 함수 ─────────────────────────────────────────────────────────────────
-
-def _load_business_method(request: dict) -> str:
-    """사업방법서 JSON에서 해당 보험사 청크 반환"""
-    data_path = _ROOT / "generation_agent" / "data" / "일반_사업방법서_3사통합.json"
-    if not data_path.exists():
-        logger.warning("[workflow] 사업방법서 데이터 파일 없음: %s", data_path)
-        return "사업방법서 데이터 파일을 찾을 수 없습니다."
-    try:
-        with open(data_path, encoding="utf-8") as f:
-            data = json.load(f)
-        company = request.get("document_request", {}).get("insurance_company", "삼성화재")
-        chunks = [
-            item["page_content"]
-            for item in data
-            if item.get("metadata", {}).get("company") == company
-        ]
-        if not chunks:
-            chunks = [item["page_content"] for item in data]
-        return "\n\n".join(chunks)
-    except Exception as e:
-        logger.error("[workflow] 사업방법서 로드 실패: %s", e)
-        return f"사업방법서 로드 오류: {e}"
-
 
 def _violations_to_ui(violations: list) -> list:
     """Violation dict → 프론트엔드 하이라이트 형식"""
@@ -103,28 +76,27 @@ def _build_improvement_note(messages: list, iteration: int, status: str) -> str:
 
 # ── 결과 조립 헬퍼 ───────────────────────────────────────────────────────────
 
-async def _build_result(result: dict, request: dict, db_warning: Optional[str]) -> dict:
-    """최종 state → API 응답 dict 변환 (run_workflow / stream_workflow 공용)"""
-    raw_status  = result.get("status", "PASS")
+def _build_result(result: dict, db_warning: Optional[str]) -> dict:
+    """최종 state → API 응답 dict 변환 (run_workflow / stream_workflow 공용).
+
+    상품설명서·사업방법서는 edit_node가 이미 state에 담아 두므로
+    여기서는 state에서 꺼내기만 한다. 별도 LLM 호출 없음.
+    """
+    raw_status  = result.get("status", "")
     iteration   = result.get("iteration", 0)
     violations  = result.get("violations", [])
     messages    = result.get("messages", [])
-    final_content = result.get("final_content") or result.get("draft_content", "")
+
+    # 약관: edit_node가 수정한 final_content 우선, 없으면 draft_content
+    final_content       = result.get("final_content") or result.get("draft_content", "")
+    # 상품설명서·사업방법서: edit_node에서 생성해서 state에 저장한 값 그대로 사용
     product_description = result.get("product_description", "")
+    business_method     = result.get("business_method", "")
 
-    if not product_description and final_content:
-        try:
-            agent = _get_generation_agent()
-            product_description = await asyncio.to_thread(
-                agent.generate_product_description, final_content, request
-            )
-        except Exception as pd_exc:
-            logger.warning("[workflow] product_description 생성 실패: %s", pd_exc)
-            product_description = ""
-
+    # 상태명 정규화: nodes.py 의 raw 상태 → 프론트가 기대하는 API 상태명
     if raw_status == "PASS":
         api_status = "COMPLIANCE_PASSED"
-    elif raw_status == "MANUAL_REVIEW":
+    elif raw_status == "MANUAL_REVIEW_REQUIRED":
         api_status = "MANUAL_REVIEW_REQUIRED"
     else:
         api_status = "ORCHESTRATOR_ERROR"
@@ -136,9 +108,27 @@ async def _build_result(result: dict, request: dict, db_warning: Optional[str]) 
         "violations_for_ui":   _violations_to_ui(violations),
         "suggestions":         _build_suggestions(violations) if api_status != "COMPLIANCE_PASSED" else [],
         "product_description": product_description,
-        "business_method":     _load_business_method(request),
+        "business_method":     business_method,
         "improvement_note":    _build_improvement_note(messages, iteration, api_status),
         "db_warning":          db_warning,
+    }
+
+
+# ── 공통 초기 State ───────────────────────────────────────────────────────────
+
+def _initial_state(request: dict) -> State:
+    """워크플로우 시작 시 초기 State 생성."""
+    return {
+        "messages":            [],
+        "request":             request,
+        "draft_content":       "",
+        "violations":          [],
+        "iteration":           0,
+        "final_content":       "",
+        "product_description": "",
+        "business_method":     "",
+        "status":              "",   # supervisor가 첫 판단 전까지 빈 문자열
+        "next_step":           "",
     }
 
 
@@ -146,25 +136,24 @@ async def _build_result(result: dict, request: dict, db_warning: Optional[str]) 
 
 async def run_workflow(request: dict) -> dict:
     """
-    LangGraph 워크플로우를 비동기로 실행하고 API 응답 형식으로 변환하여 반환.
+    LangGraph 워크플로우를 비동기로 실행하고 API 응답 형식으로 반환.
 
     반환 키:
-        status            - COMPLIANCE_PASSED | MANUAL_REVIEW_REQUIRED | ORCHESTRATOR_ERROR
-        content           - 최종 약관 전문 (final_content)
-        iteration         - 완료된 반복 횟수
-        violations_for_ui - 하이라이트용 위반 목록
-        suggestions       - 수동 검토 항목 목록
-        product_description - 상품설명서 텍스트
-        business_method   - 사업방법서 텍스트
-        improvement_note  - 진행 요약 메시지
-        db_warning        - DB 미연결 경고 (없으면 null)
+        status              - COMPLIANCE_PASSED | MANUAL_REVIEW_REQUIRED | ORCHESTRATOR_ERROR
+        content             - 최종 약관 전문
+        iteration           - 완료된 반복 횟수
+        violations_for_ui   - 하이라이트용 위반 목록
+        suggestions         - 수동 검토 항목 목록
+        product_description - 상품설명서 (edit_node 생성)
+        business_method     - 사업방법서 (edit_node 생성)
+        improvement_note    - 진행 요약 메시지
+        db_warning          - DB 미연결 경고 (없으면 null)
     """
     model_override: Optional[str] = request.get("model")
-    # request에 "model" 키를 유지해서 GenerationAgent까지 전달되게 함
+    db_warning = _check_db_warning()
 
-    # Langfuse 세션 태그 설정 (모델별 구분용)
+    # Langfuse 세션 태그 설정
     try:
-        import os
         from langfuse import Langfuse
         lf = Langfuse(
             public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
@@ -182,27 +171,10 @@ async def run_workflow(request: dict) -> dict:
     except Exception as e:
         logger.warning("[Langfuse] trace 생성 실패: %s", e)
 
-    db_warning = _check_db_warning()
-
-    # ── State 초기값 ──────────────────────────────────────────────────────────
-    initial_state: State = {
-        "messages":           [],
-        "request":            request,
-        "draft_content":      "",
-        "violations":         [],
-        "iteration":          0,
-        "final_content":      "",
-        "product_description": "",
-        "business_method":    "",
-        "status":             "PASS",
-        "next_step":          "",
-    }
-
-    # ── 그래프 실행 ───────────────────────────────────────────────────────────
     t0 = time.perf_counter()
     try:
         graph = build_graph(model_override=model_override)
-        result = await graph.ainvoke(initial_state)
+        result = await graph.ainvoke(_initial_state(request))
     except Exception as exc:
         logger.exception("[workflow] 실행 중 예외 발생: %s", exc)
         return {
@@ -212,7 +184,7 @@ async def run_workflow(request: dict) -> dict:
             "violations_for_ui":   [],
             "suggestions":         [],
             "product_description": "",
-            "business_method":     _load_business_method(request),
+            "business_method":     "",
             "improvement_note":    f"워크플로우 오류: {exc}",
             "db_warning":          db_warning,
             "error":               str(exc),
@@ -220,16 +192,13 @@ async def run_workflow(request: dict) -> dict:
         }
 
     elapsed = time.perf_counter() - t0
-    logger.info("[workflow] 완료 (%.1fs)", elapsed)
-
-    output = await _build_result(result, request, db_warning)
+    output = _build_result(result, db_warning)
     logger.info(
         "[workflow] status=%s iteration=%d violations=%d elapsed=%.1fs",
         output["status"], output["iteration"],
         len(output["violations_for_ui"]), elapsed,
     )
     return output
-
 
 
 # ── 스트리밍 실행 함수 ────────────────────────────────────────────────────────
@@ -244,23 +213,10 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
     model_override: Optional[str] = request.get("model")
     db_warning = _check_db_warning()
 
-    initial_state: State = {
-        "messages":            [],
-        "request":             request,
-        "draft_content":       "",
-        "violations":          [],
-        "iteration":           0,
-        "final_content":       "",
-        "product_description": "",
-        "business_method":     "",
-        "status":              "PASS",
-        "next_step":           "",
-    }
-
     final_state = None
     try:
         graph = build_graph(model_override=model_override)
-        async for snapshot in graph.astream(initial_state, stream_mode="values"):
+        async for snapshot in graph.astream(_initial_state(request), stream_mode="values"):
             final_state = snapshot
             msgs = snapshot.get("messages", [])
             last_msg = msgs[-1] if msgs else {}
@@ -285,6 +241,6 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
         yield "data: [DONE]\n\n"
         return
 
-    result = await _build_result(final_state, request, db_warning)
+    result = _build_result(final_state, db_warning)
     yield f"data: {json.dumps({'type': 'result', **result}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
