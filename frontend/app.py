@@ -545,11 +545,11 @@ def render_step4():
 # 백엔드 요청 빌더
 # ────────────────────────────────────────────────────────────────────────────
 
-def build_request(model=None, doc_type="약관") -> dict:
+def build_request(model=None) -> dict:
     s = st.session_state
     return {
         "document_request": {
-            "document_type":     doc_type,
+            "document_type":     "전체",   # 약관·상품설명서·사업방법서 일괄 생성
             "insurance_company": s.get("insurance_company", "삼성화재"),
             "insurance_type":    s.get("insurance_type", "기본형 실손의료비보험"),
             "product_name":      s.get("product_name", ""),
@@ -602,8 +602,8 @@ def best_result(results: list) -> dict:
     return min(pool, key=lambda r: (r.get("iteration", 99), len(r.get("violations_for_ui", []))))
 
 
-async def _post_one(session: aiohttp.ClientSession, model_id: str, doc_type: str) -> dict:
-    payload = build_request(model=model_id, doc_type=doc_type)
+async def _post_one(session: aiohttp.ClientSession, model_id: str) -> dict:
+    payload = build_request(model=model_id)
     payload["session_id"] = str(uuid4())
     try:
         async with session.post(
@@ -617,9 +617,9 @@ async def _post_one(session: aiohttp.ClientSession, model_id: str, doc_type: str
         return {"status": "ORCHESTRATOR_ERROR", "error": str(e), "model_used": model_id}
 
 
-async def _run_parallel(doc_type: str) -> list:
+async def _run_parallel() -> list:
     async with aiohttp.ClientSession() as session:
-        return list(await asyncio.gather(*[_post_one(session, m, doc_type) for m in MODELS]))
+        return list(await asyncio.gather(*[_post_one(session, m) for m in MODELS]))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -754,11 +754,10 @@ with col_result:
                 and st.session_state.get("join_age_min") == "태아"):
             st.error("⚠️ 태아 가입 불가 설정이지만 최소 가입나이가 태아입니다. STEP 2를 확인하세요.")
         else:
-            doc_type = "약관"  # 백엔드에 전달하는 대표 타입; 3개 문서 모두 반환됨
             try:
                 if generate_btn:
                     with st.status("초안 생성 중...", expanded=True) as status_box:
-                        request = build_request(model=None, doc_type=doc_type)
+                        request = build_request(model=None)
                         response = requests.post(
                             f"{BACKEND_URL}/generate/stream",
                             json=request, stream=True, timeout=300,
@@ -784,7 +783,7 @@ with col_result:
                 else:
                     with st.status("4개 모델 병렬 실행 중...", expanded=True) as status_box:
                         st.write("OpenRouter 무료 모델 4개 동시 요청...")
-                        all_results = asyncio.run(_run_parallel(doc_type))
+                        all_results = asyncio.run(_run_parallel())
                         result      = best_result(all_results)
                         model_used  = result.get("model_used", "unknown")
                         st.write(f"✅ 최적 결과 선택: {model_used}")
