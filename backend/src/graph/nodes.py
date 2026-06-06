@@ -141,11 +141,11 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
 
     elif last_role == "compliance":
         if status == "PASS":
-            next_step = "end"
-            situation = "법규 준수 확인. 위반 없음 — 약관 초안을 최종본으로 확정합니다."
+            next_step = "edit"
+            situation = "법규 준수 확인. 위반 없음 — edit 노드에서 상품설명서·사업방법서를 생성합니다."
         elif iteration >= 3:
             next_step = "edit"
-            situation = f"최대 반복({iteration}회) 도달. 잔여 위반항목 수동 검토 필요."
+            situation = f"최대 반복({iteration}회) 도달. 잔여 위반항목 수동 검토 필요. edit 노드에서 나머지 문서를 생성합니다."
         else:
             next_step = "generation"
             situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 재생성합니다."
@@ -158,10 +158,10 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         next_step = "generation"
         situation = "초기 상태. 약관 생성을 시작합니다."
 
-    # ── MANUAL_REVIEW 상태 갱신 ───────────────────────────────────────────────
+    # ── MANUAL_REVIEW_REQUIRED 상태 갱신 ─────────────────────────────────────
     updated_status = status
     if last_role == "compliance" and status == "FAIL" and iteration >= 3:
-        updated_status = "MANUAL_REVIEW"
+        updated_status = "MANUAL_REVIEW_REQUIRED"
 
     # ── LLM 평가 코멘트 생성 ──────────────────────────────────────────────────
     ctx = {
@@ -178,8 +178,6 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
     extra: dict = {}
-    if next_step == "end" and last_role == "compliance" and status == "PASS":
-        extra["final_content"] = state.get("draft_content", "")
 
     try:
         handler = _get_langfuse_handler()
