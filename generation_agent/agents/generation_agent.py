@@ -290,6 +290,7 @@ class GenerationAgent:
         lines = [
             "## 입력된 상품 조건",
             f"- 보험회사: {company} ({meta.get('insurance_type_label', '')})",
+            f"- 생성 문서: 약관·상품설명서·사업방법서 (일괄 생성)",
             f"- 상품명: {doc_req.get('product_name', '')}",
             f"- 버전/코드: {doc_req.get('product_version', '')}",
             f"- 배당 여부: {doc_req.get('dividend_type', '무배당')}",
