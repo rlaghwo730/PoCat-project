@@ -3,10 +3,11 @@
 백엔드: http://localhost:8000 (FastAPI + LangGraph)
 
 구조:
-  STEP 1. 기본 설정     (보험사 선택, 생성 문서, 상품명)
+  STEP 1. 기본 설정     (보험사 선택, 상품명)
   STEP 2. 상품 설계 조건 (보험기간, 납입, 갱신, 가입나이)
   STEP 3. 보장 조건     (보장 종목, 비급여, 한도, 자기부담)
   STEP 4. 확인 및 생성  (입력값 요약 + 생성 버튼)
+  결과   : 약관 / 상품설명서 / 사업방법서 3탭 항상 표시
 """
 
 import asyncio
@@ -243,7 +244,6 @@ def _init_session():
     defaults = COMPANY_DEFAULTS["삼성화재"]
     init_keys = {
         "insurance_company":  "삼성화재",
-        "generate_docs":      ["약관", "상품설명서", "사업방법서"],
         "insurance_type":     "기본형 실손의료비보험",
         "policy_period":      defaults["policy_period"],
         "premium_payment_period": defaults["premium_payment_period"],
@@ -332,32 +332,14 @@ def render_step1():
         on_change=lambda: apply_company_defaults(st.session_state.insurance_company),
     )
 
-    st.markdown("**생성할 문서** (1개 이상 선택)")
-    gen_docs = st.session_state.get("generate_docs", [])
-    col_d1, col_d2, col_d3 = st.columns(3)
-    with col_d1:
-        doc_clause = st.checkbox("📜 약관",       value="약관"       in gen_docs, key="_doc_clause")
-    with col_d2:
-        doc_desc   = st.checkbox("📋 상품설명서", value="상품설명서" in gen_docs, key="_doc_desc")
-    with col_d3:
-        doc_biz    = st.checkbox("📁 사업방법서", value="사업방법서" in gen_docs, key="_doc_biz")
-
-    selected_docs = (
-        (["약관"]       if doc_clause else []) +
-        (["상품설명서"] if doc_desc   else []) +
-        (["사업방법서"] if doc_biz    else [])
-    )
-    st.session_state.generate_docs = selected_docs
-
-    if not selected_docs:
-        st.warning("⚠️ 최소 1개 이상의 문서를 선택해야 합니다.")
+    st.caption("ℹ️ 약관·상품설명서·사업방법서 3개 문서를 한 번에 생성합니다.")
 
     st.divider()
-    st.text_input("상품명",         key="product_name",    help="보험사 변경 시 자동 업데이트")
+    st.text_input("상품명",          key="product_name",    help="보험사 변경 시 자동 업데이트")
     st.text_input("버전 / 상품코드", key="product_version")
     st.selectbox("보험 유형", ["기본형 실손의료비보험", "특약 포함 실손의료비보험"], key="insurance_type")
 
-    return bool(selected_docs)
+    return True  # STEP 1은 항상 다음으로 진행 가능
 
 
 def render_step2():
@@ -516,13 +498,11 @@ def render_step4():
         html += "</div>"
         st.markdown(html, unsafe_allow_html=True)
 
-    gen_docs = s.get("generate_docs", [])
     card("기본 설정", [
-        ("보험사",     s.get("insurance_company", "-")),
-        ("생성 문서",  ", ".join(gen_docs) if gen_docs else "미선택"),
-        ("상품명",     s.get("product_name", "-")),
-        ("버전/코드",  s.get("product_version", "-")),
-        ("보험 유형",  s.get("insurance_type", "-")),
+        ("보험사",    s.get("insurance_company", "-")),
+        ("상품명",    s.get("product_name", "-")),
+        ("버전/코드", s.get("product_version", "-")),
+        ("보험 유형", s.get("insurance_type", "-")),
     ])
 
     card("상품 설계 조건", [
@@ -575,7 +555,6 @@ def build_request(model=None, doc_type="약관") -> dict:
             "product_name":      s.get("product_name", ""),
             "product_version":   s.get("product_version", ""),
             "dividend_type":     "무배당",
-            "generate_docs":     s.get("generate_docs", ["약관"]),
         },
         "product_design_conditions": {
             "policy_period":          s.get("policy_period", "1년 만기"),
@@ -688,27 +667,21 @@ def render_result_panel(result: dict, model_label: str):
     if result.get("db_warning"):      st.warning(f"⚠️ {result['db_warning']}")
     if result.get("improvement_note"):st.info(f"📊 {result['improvement_note']}")
 
-    gen_docs = st.session_state.get("generate_docs", ["약관", "상품설명서", "사업방법서"])
-    tab_map = {
-        "약관":       ("📜 약관",    lambda r: apply_violation_highlights(r.get("content",""), r.get("violations_for_ui",[]))),
-        "상품설명서": ("📋 상품설명서", lambda r: r.get("product_description", "")),
-        "사업방법서": ("📁 사업방법서", lambda r: r.get("business_method", "")),
-    }
-    tab_labels  = [tab_map[d][0] for d in gen_docs if d in tab_map]
-    tab_getters = [tab_map[d][1] for d in gen_docs if d in tab_map]
+    # 항상 3탭 고정
+    tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
 
-    if not tab_labels:
-        tab_labels  = [v[0] for v in tab_map.values()]
-        tab_getters = [v[1] for v in tab_map.values()]
+    with tab_clause:
+        highlighted = apply_violation_highlights(
+            result.get("content", ""),
+            result.get("violations_for_ui", []),
+        )
+        st.markdown(highlighted, unsafe_allow_html=True)
 
-    tabs = st.tabs(tab_labels)
-    for tab, getter in zip(tabs, tab_getters):
-        with tab:
-            content = getter(result)
-            if "약관" in tab_labels[tab_getters.index(getter)] if getter in tab_getters else False:
-                st.markdown(content, unsafe_allow_html=True)
-            else:
-                st.markdown(content)
+    with tab_desc:
+        st.markdown(result.get("product_description", ""))
+
+    with tab_biz:
+        st.markdown(result.get("business_method", ""))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -754,9 +727,7 @@ with col_form:
             st.button("다음 →", type="primary", on_click=go_next,
                       use_container_width=True, disabled=not can_proceed)
         else:
-            basic_ok = bool(st.session_state.get("basic_coverage_items", []))
-            docs_ok  = bool(st.session_state.get("generate_docs", []))
-            can_gen  = basic_ok and docs_ok
+            can_gen = bool(st.session_state.get("basic_coverage_items", []))
 
             generate_btn = st.button(
                 "⚡ 초안 생성 (Upstage)",
@@ -769,8 +740,7 @@ with col_form:
                 help="OpenRouter 무료 모델 4개 병렬 실행",
             )
             if not can_gen:
-                if not basic_ok: st.warning("⚠️ STEP 3에서 기본 보장 종목을 선택하세요.")
-                if not docs_ok:  st.warning("⚠️ STEP 1에서 생성할 문서를 선택하세요.")
+                st.warning("⚠️ STEP 3에서 기본 보장 종목을 선택하세요.")
 
 # ────────────────────────────────────────────────────────────────────────────
 # 결과 패널
@@ -784,7 +754,7 @@ with col_result:
                 and st.session_state.get("join_age_min") == "태아"):
             st.error("⚠️ 태아 가입 불가 설정이지만 최소 가입나이가 태아입니다. STEP 2를 확인하세요.")
         else:
-            doc_type = st.session_state.get("generate_docs", ["약관"])[0]
+            doc_type = "약관"  # 백엔드에 전달하는 대표 타입; 3개 문서 모두 반환됨
             try:
                 if generate_btn:
                     with st.status("초안 생성 중...", expanded=True) as status_box:
@@ -839,12 +809,11 @@ with col_result:
                 st.error(f"오류 발생: {e}")
                 st.exception(e)
     else:
-        company  = st.session_state.get("insurance_company", "삼성화재")
-        gen_docs = st.session_state.get("generate_docs", [])
+        company = st.session_state.get("insurance_company", "삼성화재")
         st.info(
-            f"**현재 설정:** {company}  |  "
-            f"생성 문서: {', '.join(gen_docs) if gen_docs else '미선택'}\n\n"
-            "좌측 폼을 모두 입력한 후 **STEP 4**에서 생성 버튼을 클릭하세요."
+            f"**현재 설정:** {company}\n\n"
+            "좌측 폼을 모두 입력한 후 **STEP 4**에서 생성 버튼을 클릭하세요.\n\n"
+            "약관·상품설명서·사업방법서 3개 문서가 한 번에 생성됩니다."
         )
         st.markdown("""
 **생성 흐름 (LangManus 아키텍처)**
