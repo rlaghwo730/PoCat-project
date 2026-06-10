@@ -48,7 +48,7 @@ class GenerateRequest(BaseModel):
     document_request:          dict
     product_design_conditions: dict
     coverage_conditions:       dict
-    applicant_info:            dict
+    applicant_info:            dict = Field(default_factory=dict)
     session_id:                str = Field(default="", description="세션 ID (빈 값이면 서버에서 자동 생성)")
     model:                     Optional[str] = Field(default=None, description="OpenRouter 모델 ID")
 

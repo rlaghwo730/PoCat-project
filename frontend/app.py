@@ -802,12 +802,23 @@ with col_result:
                     else "running"
                 )
                 status_box.update(label=label, state=state)
-                render_result_panel(result, model_used)
+                st.session_state.generation_result = result
+                st.session_state.generation_model  = model_used
 
+            except requests.exceptions.HTTPError as e:
+                st.error(f"오류 발생: {e}")
+                if e.response is not None:
+                    st.json(e.response.json())
             except Exception as e:
                 st.error(f"오류 발생: {e}")
                 st.exception(e)
-    else:
+
+    if "generation_result" in st.session_state:
+        render_result_panel(
+            st.session_state.generation_result,
+            st.session_state.get("generation_model", "Upstage Solar"),
+        )
+    elif not (generate_btn or run_all_btn):
         company = st.session_state.get("insurance_company", "삼성화재")
         st.info(
             f"**현재 설정:** {company}\n\n"

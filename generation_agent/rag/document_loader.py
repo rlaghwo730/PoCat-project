@@ -8,7 +8,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_upstage import UpstageEmbeddings
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_FILES = [
@@ -56,7 +56,8 @@ def _split_if_needed(documents: list[Document]) -> list[Document]:
 
 
 def get_vectorstore(force_reload: bool = False) -> Chroma:
-    embeddings = UpstageEmbeddings(model="solar-embedding-1-large")
+    embeddings = UpstageEmbeddings(model="solar-embedding-1-large",
+                                api_key=os.getenv("UPSTAGE_API_KEY"))
 
     chroma_path = Path(CHROMA_PERSIST_DIR)
     already_exists = chroma_path.exists() and any(chroma_path.iterdir())
