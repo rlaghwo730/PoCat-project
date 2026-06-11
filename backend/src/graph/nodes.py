@@ -141,11 +141,11 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
 
     elif last_role == "compliance":
         if status == "PASS":
-            next_step = "end"
-            situation = "법규 준수 확인. 위반 없음 — 약관 초안을 최종본으로 확정합니다."
+            next_step = "edit"
+            situation = "법규 준수 확인. 위반 없음 — edit 노드에서 상품설명서·사업방법서를 생성합니다."
         elif iteration >= 3:
             next_step = "edit"
-            situation = f"최대 반복({iteration}회) 도달. 잔여 위반항목 수동 검토 필요."
+            situation = f"최대 반복({iteration}회) 도달. 잔여 위반항목 수동 검토 필요. edit 노드에서 나머지 문서를 생성합니다."
         else:
             next_step = "generation"
             situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 재생성합니다."
@@ -158,10 +158,10 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         next_step = "generation"
         situation = "초기 상태. 약관 생성을 시작합니다."
 
-    # ── MANUAL_REVIEW 상태 갱신 ───────────────────────────────────────────────
+    # ── MANUAL_REVIEW_REQUIRED 상태 갱신 ─────────────────────────────────────
     updated_status = status
     if last_role == "compliance" and status == "FAIL" and iteration >= 3:
-        updated_status = "MANUAL_REVIEW"
+        updated_status = "MANUAL_REVIEW_REQUIRED"
 
     # ── LLM 평가 코멘트 생성 ──────────────────────────────────────────────────
     ctx = {
@@ -178,8 +178,6 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
     extra: dict = {}
-    if next_step == "end" and last_role == "compliance" and status == "PASS":
-        extra["final_content"] = state.get("draft_content", "")
 
     try:
         handler = _get_langfuse_handler()
@@ -205,14 +203,10 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
 
     try:
         handler = _get_langfuse_handler()
-        # model_override를 request에 포함시켜 GenerationAgent까지 전달
         request = {**state["request"], "model": model_override}
 
         if iteration == 0:
-            result = await asyncio.to_thread(
-                agent.generate, request,
-                # langfuse handler를 GenerationAgent 외부에서 주입
-            )
+            result = await asyncio.to_thread(agent.generate, request)
         else:
             violations = state.get("violations", [])
             priority_fixes = [
@@ -221,9 +215,7 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
                 for v in violations[:5]
             ]
             feedback = {"priority_fixes": priority_fixes}
-            result = await asyncio.to_thread(
-                agent.regenerate, request, feedback, iteration + 1
-            )
+            result = await asyncio.to_thread(agent.regenerate, request, feedback, iteration + 1)
 
         new_iter = iteration + 1
         logger.info("[generation] iteration=%d model=%s 완료", new_iter, model_override or "default")
@@ -308,13 +300,14 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
 
 
 async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
-    """위반 항목만 부분 수정 + 상품설명서 생성"""
+    """위반 항목만 부분 수정 + 상품설명서·사업방법서 동시 생성"""
     llm        = get_edit_llm(model_override)
     agent      = _get_generation_agent()
     violations = state.get("violations", [])
     draft      = state["draft_content"]
 
     try:
+        # ── Step 1: 약관 위반 항목 부분 수정 ──────────────────────────────────
         if violations:
             fix_items = []
             for i, v in enumerate(violations, 1):
@@ -333,28 +326,33 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                 f"=== 수정 대상 ({len(violations)}건) ===\n"
                 + "\n\n".join(fix_items)
             )
-            llm_msgs = [
-                SystemMessage(content=_prompt("edit")),
-                HumanMessage(content=edit_prompt),
-            ]
             handler = _get_langfuse_handler()
-            response      = await llm.ainvoke(llm_msgs, config={"callbacks": [handler]})
+            response      = await llm.ainvoke(
+                [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
+                config={"callbacks": [handler]},
+            )
             final_content = response.content
         else:
             final_content = draft
 
-        product_description = await asyncio.to_thread(
+        # ── Step 2: 상품설명서 + 사업방법서 동시 생성 ────────────────────────
+        # generate_product_description이 이제 dict {"product_description", "business_method"} 반환
+        generated_docs = await asyncio.to_thread(
             agent.generate_product_description, final_content, state["request"]
         )
 
-        logger.info("[edit] 부분 수정 완료 violations=%d", len(violations))
+        logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
         return {
             "final_content":       final_content,
-            "product_description": product_description,
+            "product_description": generated_docs["product_description"],
+            "business_method":     generated_docs["business_method"],
             "messages": state["messages"] + [
                 {
                     "role": "edit",
-                    "content": f"부분 수정 완료 ({len(violations)}건) + 상품설명서 생성",
+                    "content": (
+                        f"부분 수정 완료 ({len(violations)}건) "
+                        "+ 상품설명서·사업방법서 생성 완료"
+                    ),
                 }
             ],
         }
@@ -363,6 +361,7 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         return {
             "final_content":       draft,
             "product_description": "",
+            "business_method":     "",
             "messages": state.get("messages", []) + [
                 {"role": "edit", "content": f"편집 오류: {e}"}
             ],
