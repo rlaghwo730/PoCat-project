@@ -147,3 +147,27 @@ PoCat-project/
 └── data/
     └── legal-data-pipeline/         # 법령 API 연동
 ```
+## Docker 실행 방법
+
+이 Docker 구성은 외부 Neon PostgreSQL/pgvector DB를 사용합니다. `docker-compose.yml`에는 PostgreSQL 또는 pgvector 컨테이너를 포함하지 않습니다.
+
+`.env.example`을 참고하여 프로젝트 루트에 `.env` 파일을 생성합니다. 실제 API key, DB password, Neon connection string은 Git에 포함하지 않습니다.
+
+Docker 이미지를 빌드합니다.
+
+```bash
+docker compose build
+```
+
+backend와 frontend 컨테이너를 실행합니다.
+
+```bash
+docker compose up
+```
+
+접속 주소는 다음과 같습니다.
+
+- backend API docs: http://localhost:8000/docs
+- frontend: http://localhost:8501
+
+backend는 FastAPI 앱 `backend.src.api.app:app`을 uvicorn으로 실행합니다. frontend는 Streamlit 앱 `frontend/app.py`를 실행하며, compose 네트워크 안에서는 `BACKEND_URL=http://backend:8000`으로 backend를 호출합니다.

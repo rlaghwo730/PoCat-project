@@ -17,3 +17,4 @@ httpx==0.28.1
 langfuse==4.7.1
 anthropic==0.104.1
 aiohttp>=3.9.0
+sqlalchemy>=2.0.0

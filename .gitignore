@@ -8,3 +8,6 @@ venv/
 .streamlit/secrets.toml
 .claude/
 *.egg-info/
+.env
+*.env
+!.env.example
