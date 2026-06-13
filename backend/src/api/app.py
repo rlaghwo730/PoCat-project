@@ -79,6 +79,9 @@ class GenerateResponse(BaseModel):
     improvement_note:    str
     db_warning:          Optional[str] = None
     model_used:          Optional[str] = None
+    dictionary_findings: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_findings:   list[dict[str, Any]] = Field(default_factory=list)
+    risk_dictionary_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 # ── 미들웨어: 요청 ID 로깅 ─────────────────────────────────────────────────────

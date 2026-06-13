@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .types import State
 from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor_llm, get_edit_llm
+from ..tools.risk_dictionary_detector import detect_compliance_risks
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,10 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     )
 
     try:
+        risk_result = await asyncio.to_thread(
+            detect_compliance_risks,
+            state.get("draft_content", ""),
+        )
         report = await asyncio.to_thread(agent.validate, detection_input)
 
         violations = [
@@ -286,10 +291,19 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             for v in report.violations
         ]
         status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
-        logger.info("[compliance] status=%s violations=%d", status, len(violations))
+        risk_summary = risk_result.get("summary", {})
+        logger.info(
+            "[compliance] status=%s violations=%d dictionary_risks=%d",
+            status,
+            len(violations),
+            risk_summary.get("total_count", 0),
+        )
 
         return {
             "violations": violations,
+            "dictionary_findings": risk_result.get("dictionary_findings", []),
+            "semantic_findings": risk_result.get("semantic_findings", []),
+            "risk_dictionary_summary": risk_summary,
             "status":     status,
             "messages":   state["messages"] + [
                 {"role": "compliance", "content": f"검증 완료: {status} (위반 {len(violations)}건)"}
@@ -300,6 +314,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.error("[compliance] 검증 실패: %s", e)
         return {
             "violations": [],
+            "dictionary_findings": [],
+            "semantic_findings": [],
+            "risk_dictionary_summary": {},
             "status":     "ERROR",
             "messages":   state["messages"] + [
                 {"role": "compliance", "content": f"검증 오류 발생: {e}"}

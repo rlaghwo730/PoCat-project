@@ -73,9 +73,11 @@ def _build_suggestions(violations: list) -> list:
 
 
 def _check_db_warning() -> Optional[str]:
-    """DB 연결 불가 시 경고 메시지 반환"""
-    if not os.getenv("DB_API_URL"):
-        return "DB_API_URL 미설정 — MOCK 모드: 법률 DB 조회 없이 실행됩니다."
+    """Return a warning only when no supported DB URL is configured."""
+    from ..tools.risk_dictionary_detector import _db_url
+
+    if not _db_url():
+        return "DB URL is not configured; legal DB lookup will run in mock mode."
     return None
 
 
@@ -139,6 +141,9 @@ async def _build_result(result: dict, request: dict, db_warning: Optional[str]) 
         "business_method":     _load_business_method(request),
         "improvement_note":    _build_improvement_note(messages, iteration, api_status),
         "db_warning":          db_warning,
+        "dictionary_findings": result.get("dictionary_findings", []),
+        "semantic_findings":   result.get("semantic_findings", []),
+        "risk_dictionary_summary": result.get("risk_dictionary_summary", {}),
     }
 
 
@@ -196,6 +201,9 @@ async def run_workflow(request: dict) -> dict:
         "business_method":    "",
         "status":             "PASS",
         "next_step":          "",
+        "dictionary_findings": [],
+        "semantic_findings":   [],
+        "risk_dictionary_summary": {},
     }
 
     # ── 그래프 실행 ───────────────────────────────────────────────────────────
@@ -255,6 +263,9 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
         "business_method":     "",
         "status":              "PASS",
         "next_step":           "",
+        "dictionary_findings":  [],
+        "semantic_findings":    [],
+        "risk_dictionary_summary": {},
     }
 
     final_state = None
