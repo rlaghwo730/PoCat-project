@@ -1,10 +1,10 @@
 {
   "document_request": {
-    "document_type": "약관",
-    "insurance_company": "삼성화재",
-    "insurance_type": "일반 실손의료비보험",
-    "product_name": "무배당 삼성화재 실손의료비보험",
-    "product_version": "2024",
+    "document_type": "전체",
+    "insurance_company": "",
+    "insurance_type": "기본형 실손의료비보험",
+    "product_name": "",
+    "product_version": "",
     "dividend_type": "무배당"
   },
   "product_design_conditions": {

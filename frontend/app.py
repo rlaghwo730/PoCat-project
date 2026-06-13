@@ -11,8 +11,10 @@
 """
 
 import asyncio
+import io
 import json
 import os
+import re
 from uuid import uuid4
 
 import aiohttp
@@ -378,14 +380,33 @@ def render_step2():
         age_hints = {"삼성화재": "0세 / 65세", "현대해상": "태아 / 60세", "DB손해보험": "5세 / 99세"}
         st.caption(f"ℹ️ {company} 기본: {age_hints.get(company, '')}")
 
-        st.text_input("가입 최소 나이", key="join_age_min")
-        st.text_input("가입 최대 나이", key="join_age_max")
+        defaults = COMPANY_DEFAULTS.get(company, COMPANY_DEFAULTS["삼성화재"])
+        st.text_input(
+            "가입 최소 나이",
+            key="join_age_min",
+            placeholder=defaults["join_age_min"],
+        )
+        st.text_input(
+            "가입 최대 나이",
+            key="join_age_max",
+            placeholder=defaults["join_age_max"],
+        )
         st.number_input("최대 보장 나이 (세)", min_value=70, max_value=120, step=1, key="max_coverage_age")
 
         st.divider()
         st.markdown("**🍼 특수 조건**")
         st.radio("태아 가입 가능 여부", ["가능", "불가"], horizontal=True, key="fetal_enrollment")
         st.radio("보험계약대출 가능 여부", ["가능", "불가"], horizontal=True, key="policy_loan")
+
+    # 필수 항목 유효성 검사
+    missing = [
+        label for label, key in [("가입 최소 나이", "join_age_min"), ("가입 최대 나이", "join_age_max")]
+        if not st.session_state.get(key, "").strip()
+    ]
+    if missing:
+        st.error(f"⚠️ 필수 항목을 입력해주세요: {', '.join(missing)}")
+        return False
+    return True
 
 
 def render_step3():
@@ -641,6 +662,45 @@ def apply_violation_highlights(content: str, violations: list) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# docx 변환
+# ────────────────────────────────────────────────────────────────────────────
+
+def _to_docx_bytes(title: str, content: str) -> bytes:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+
+    heading = doc.add_heading(title, level=0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    for line in content.split("\n"):
+        stripped = line.rstrip()
+        if stripped.startswith("### "):
+            doc.add_heading(stripped[4:], level=3)
+        elif stripped.startswith("## "):
+            doc.add_heading(stripped[3:], level=2)
+        elif stripped.startswith("# "):
+            doc.add_heading(stripped[2:], level=1)
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            doc.add_paragraph(stripped[2:], style="List Bullet")
+        elif re.match(r"^\d+\. ", stripped):
+            doc.add_paragraph(re.sub(r"^\d+\. ", "", stripped), style="List Number")
+        elif stripped == "":
+            doc.add_paragraph()
+        else:
+            para = doc.add_paragraph()
+            for i, part in enumerate(re.split(r"\*\*(.+?)\*\*", stripped)):
+                run = para.add_run(part)
+                if i % 2 == 1:
+                    run.bold = True
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # 결과 패널
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -670,18 +730,42 @@ def render_result_panel(result: dict, model_label: str):
     # 항상 3탭 고정
     tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
 
+    product_name = st.session_state.get("product_name", "보험상품")
+    company      = st.session_state.get("insurance_company", "")
+
     with tab_clause:
-        highlighted = apply_violation_highlights(
-            result.get("content", ""),
-            result.get("violations_for_ui", []),
-        )
+        content = result.get("content", "")
+        highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
         st.markdown(highlighted, unsafe_allow_html=True)
+        if content:
+            st.download_button(
+                "⬇️ 약관 다운로드 (.docx)",
+                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                file_name=f"{company}_{product_name}_약관.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
     with tab_desc:
-        st.markdown(result.get("product_description", ""))
+        desc = result.get("product_description", "")
+        st.markdown(desc)
+        if desc:
+            st.download_button(
+                "⬇️ 상품설명서 다운로드 (.docx)",
+                data=_to_docx_bytes(f"{company} {product_name} 상품설명서", desc),
+                file_name=f"{company}_{product_name}_상품설명서.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
     with tab_biz:
-        st.markdown(result.get("business_method", ""))
+        biz = result.get("business_method", "")
+        st.markdown(biz)
+        if biz:
+            st.download_button(
+                "⬇️ 사업방법서 다운로드 (.docx)",
+                data=_to_docx_bytes(f"{company} {product_name} 사업방법서", biz),
+                file_name=f"{company}_{product_name}_사업방법서.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -709,7 +793,7 @@ with col_form:
     if current_step == 0:
         can_proceed = render_step1()
     elif current_step == 1:
-        render_step2()
+        can_proceed = render_step2()
     elif current_step == 2:
         can_proceed = render_step3()
     elif current_step == 3:
