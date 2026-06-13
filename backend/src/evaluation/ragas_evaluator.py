@@ -24,6 +24,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,58 +35,59 @@ _DEFAULT_DATASET = _HERE / "ragas_test_dataset.json"
 _DEFAULT_CSV = _HERE / "ragas_results.csv"
 _DEFAULT_JSON = _HERE / "ragas_results.json"
 
+# 프로젝트 루트(generation_agent 패키지가 있는 위치)를 sys.path에 추가
+_ROOT = Path(__file__).parent.parent.parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1) RAG 호출부 — 나중에 기존 시스템으로 연결할 지점
+# 1) RAG 호출부
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_rag(question: str) -> dict:
     """질문 하나를 RAG 시스템에 입력해 answer 와 contexts 를 돌려준다.
 
-    ┌──────────────────────────────────────────────────────────────────────┐
-    │ TODO: 여기를 기존 프로젝트의 retriever / RAG agent 호출로 교체하세요.   │
-    └──────────────────────────────────────────────────────────────────────┘
-
-    반환 형식 (반드시 아래 두 키를 채울 것):
+    반환 형식:
         {
             "answer":   str,         # RAG 가 생성한 최종 답변
-            "contexts": list[str],   # 검색되어 답변 생성에 사용된 문서 청크들
+            "contexts": list[str],   # 검색에 사용된 문서 청크들
         }
+    """
+    try:
+        from generation_agent.rag.document_loader import get_vectorstore
+        from langchain_upstage import ChatUpstage
+        from langchain_core.messages import HumanMessage
 
-    연결 예시 ① — retriever + LLM 을 직접 호출하는 경우:
-        from backend.src.rag.retriever import get_retriever
-        from backend.src.agents.agents import get_generation_llm
+        vectorstore = get_vectorstore()
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-        retriever = get_retriever()
-        docs = retriever.invoke(question)                 # 검색
-        contexts = [d.page_content for d in docs]
-        llm = get_generation_llm()
-        prompt = f"다음 문맥을 참고해 답하세요.\n\n{contexts}\n\n질문: {question}"
-        answer = llm.invoke(prompt).content
+        docs = retriever.invoke(question)
+        contexts = [doc.page_content for doc in docs]
+
+        llm = ChatUpstage(
+            model="solar-pro",
+            api_key=os.getenv("UPSTAGE_API_KEY"),
+        )
+        context_text = "\n\n---\n\n".join(contexts)
+        prompt = f"""다음 약관 내용을 참고하여 질문에 간결하고 정확하게 답변하세요.
+
+## 참고 약관
+{context_text}
+
+## 질문
+{question}
+
+## 답변:"""
+        response = llm.invoke([HumanMessage(content=prompt)])
+        answer = response.content
+
+        logger.info("[run_rag] 질문='%s' contexts=%d개", question[:40], len(contexts))
         return {"answer": answer, "contexts": contexts}
 
-    연결 예시 ② — 이미 RAG 체인/에이전트가 있는 경우:
-        from backend.src.rag.chain import rag_chain
-        result = rag_chain.invoke({"question": question})
-        return {
-            "answer": result["answer"],
-            "contexts": [d.page_content for d in result["source_documents"]],
-        }
-
-    주의:
-      - contexts 는 반드시 '문자열 리스트' 여야 한다 (Document 객체면 .page_content 로 변환).
-      - contexts 가 비면 context 관련 지표(precision/recall)가 계산되지 않으니 주의.
-    """
-    # ── 임시 모의 구현 (단독 실행/스모크 테스트용) ────────────────────────────
-    # 실제 연결 시 아래 블록을 위 예시처럼 교체하면 된다.
-    logger.warning("[run_rag] 모의 구현 사용 중 — 실제 RAG 시스템에 연결하세요 (TODO).")
-    return {
-        "answer": f"(모의 답변) '{question}' 에 대한 답변입니다. 실제 RAG 연결 후 교체됩니다.",
-        "contexts": [
-            "(모의 문맥1) 실제 retriever 가 반환한 문서 청크로 교체하세요.",
-            "(모의 문맥2) 실제 retriever 가 반환한 문서 청크로 교체하세요.",
-        ],
-    }
+    except Exception as e:
+        logger.error("[run_rag] RAG 실행 실패: %s", e)
+        return {"answer": f"오류: {e}", "contexts": []}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

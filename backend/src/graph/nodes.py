@@ -80,8 +80,7 @@ async def coordinator_node(state: State, model_override: Optional[str] = None) -
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
     try:
-        handler = _get_langfuse_handler()
-        response = await llm.ainvoke(messages, config={"callbacks": [handler]})
+        response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[coordinator] %s", response.content[:80])
         return {
             "messages": state.get("messages", []) + [
@@ -105,8 +104,7 @@ async def planner_node(state: State, model_override: Optional[str] = None) -> di
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
     try:
-        handler = _get_langfuse_handler()
-        response = await llm.ainvoke(messages, config={"callbacks": [handler]})
+        response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[planner] %s", response.content[:80])
         return {
             "messages": state["messages"] + [
@@ -180,8 +178,7 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
     extra: dict = {}
 
     try:
-        handler = _get_langfuse_handler()
-        response = await llm.ainvoke(llm_messages, config={"callbacks": [handler]})
+        response = await llm.ainvoke(llm_messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[supervisor] %s → next=%s", situation, next_step)
         supervisor_comment = f"[→{next_step.upper()}] {response.content}"
     except Exception as e:
@@ -326,10 +323,9 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                 f"=== 수정 대상 ({len(violations)}건) ===\n"
                 + "\n\n".join(fix_items)
             )
-            handler = _get_langfuse_handler()
             response      = await llm.ainvoke(
                 [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
-                config={"callbacks": [handler]},
+                config={"callbacks": state.get("langfuse_callbacks", [])},
             )
             final_content = response.content
         else:

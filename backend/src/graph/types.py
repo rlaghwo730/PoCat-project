@@ -12,3 +12,4 @@ class State(TypedDict):
     business_method: str       # 사업방법서
     status: str                # PASS / FAIL / MANUAL_REVIEW
     next_step: str             # supervisor가 설정하는 다음 노드: generation/compliance/edit/end
+    langfuse_callbacks: list   # Langfuse CallbackHandler 리스트

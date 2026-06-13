@@ -116,7 +116,7 @@ def _build_result(result: dict, db_warning: Optional[str]) -> dict:
 
 # ── 공통 초기 State ───────────────────────────────────────────────────────────
 
-def _initial_state(request: dict) -> State:
+def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> State:
     """워크플로우 시작 시 초기 State 생성."""
     return {
         "messages":            [],
@@ -129,6 +129,7 @@ def _initial_state(request: dict) -> State:
         "business_method":     "",
         "status":              "",   # supervisor가 첫 판단 전까지 빈 문자열
         "next_step":           "",
+        "langfuse_callbacks":  langfuse_callbacks or [],
     }
 
 
@@ -152,29 +153,41 @@ async def run_workflow(request: dict) -> dict:
     model_override: Optional[str] = request.get("model")
     db_warning = _check_db_warning()
 
-    # Langfuse 세션 태그 설정
+    t0 = time.perf_counter()
     try:
-        from langfuse import Langfuse
-        lf = Langfuse(
+        from langfuse import Langfuse, get_client, propagate_attributes
+        from langfuse.langchain import CallbackHandler as LangfuseHandler
+
+        Langfuse(
             public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
             secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
             host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
         )
-        lf.trace(
-            name="insurance-policy-generation",
-            session_id=request.get("session_id", ""),
-            tags=[model_override or "upstage-solar", "pocat5"],
-            metadata={"model": model_override or "upstage-solar"},
-        )
-        lf.flush()
-        logger.info("[Langfuse] trace 생성 완료: model=%s", model_override or "upstage-solar")
-    except Exception as e:
-        logger.warning("[Langfuse] trace 생성 실패: %s", e)
+        langfuse = get_client()
 
-    t0 = time.perf_counter()
-    try:
-        graph = build_graph(model_override=model_override)
-        result = await graph.ainvoke(_initial_state(request))
+        with langfuse.start_as_current_observation(
+            as_type="span",
+            name="insurance-policy-generation",
+        ) as root_span:
+            with propagate_attributes(
+                session_id=str(request.get("session_id", "")),
+                tags=[str(model_override or "upstage-solar"), "pocat5"],
+                metadata={"model": str(model_override or "upstage-solar")},
+            ):
+                langfuse_handler = LangfuseHandler()
+                config = {"callbacks": [langfuse_handler]}
+
+                graph = build_graph(model_override=model_override)
+                result = await graph.ainvoke(_initial_state(request), config=config)
+
+                root_span.update(
+                    output={
+                        "status": result.get("status", ""),
+                        "iteration": result.get("iteration", 0),
+                    }
+                )
+
+        langfuse.flush()
     except Exception as exc:
         logger.exception("[workflow] 실행 중 예외 발생: %s", exc)
         return {
@@ -215,19 +228,43 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
 
     final_state = None
     try:
-        graph = build_graph(model_override=model_override)
-        async for snapshot in graph.astream(_initial_state(request), stream_mode="values"):
-            final_state = snapshot
-            msgs = snapshot.get("messages", [])
-            last_msg = msgs[-1] if msgs else {}
-            progress = {
-                "type":      "progress",
-                "node":      last_msg.get("role", ""),
-                "status":    snapshot.get("status"),
-                "iteration": snapshot.get("iteration", 0),
-                "message":   last_msg.get("content", ""),
-            }
-            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+        from langfuse import Langfuse, get_client, propagate_attributes
+        from langfuse.langchain import CallbackHandler as LangfuseHandler
+
+        Langfuse(
+            public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+            secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+            host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        )
+        langfuse = get_client()
+
+        with langfuse.start_as_current_observation(
+            as_type="span",
+            name="insurance-policy-generation",
+        ) as root_span:
+            with propagate_attributes(
+                session_id=str(request.get("session_id", "")),
+                tags=[str(model_override or "upstage-solar"), "pocat5"],
+                metadata={"model": str(model_override or "upstage-solar")},
+            ):
+                langfuse_handler = LangfuseHandler()
+                config = {"callbacks": [langfuse_handler]}
+
+                graph = build_graph(model_override=model_override)
+                async for snapshot in graph.astream(_initial_state(request), stream_mode="values", config=config):
+                    final_state = snapshot
+                    msgs = snapshot.get("messages", [])
+                    last_msg = msgs[-1] if msgs else {}
+                    progress = {
+                        "type":      "progress",
+                        "node":      last_msg.get("role", ""),
+                        "status":    snapshot.get("status"),
+                        "iteration": snapshot.get("iteration", 0),
+                        "message":   last_msg.get("content", ""),
+                    }
+                    yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+
+        langfuse.flush()
 
     except Exception as exc:
         logger.exception("[stream] 실행 중 예외: %s", exc)
