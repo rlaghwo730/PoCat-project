@@ -28,6 +28,7 @@ python-dotenv==1.2.2
 
 # UI
 streamlit>=1.35.0
+python-docx>=1.1.0
 
 # Monitoring
 langfuse==4.7.1

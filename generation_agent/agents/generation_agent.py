@@ -143,8 +143,7 @@ class GenerationAgent:
     def __init__(self) -> None:
         self._model_override = None
         self._defaults = _load_default_schema()
-        vectorstore = get_vectorstore()
-        self.retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        self._vectorstore = get_vectorstore()
         self._db_url = os.getenv("DB_API_URL")
 
     def _get_llm(self, model_override: Optional[str] = None):
@@ -172,8 +171,8 @@ class GenerationAgent:
 
     def _retrieve_context(self, request: dict, doc_type: str) -> str:
         """
-        회사명·문서유형·보장종목을 모두 담은 쿼리로 검색.
-        동일 회사의 동일 문서 유형 청크가 우선 검색되도록 쿼리를 구성한다.
+        회사·문서유형 메타데이터 필터 + 의미 검색으로 동일 회사 청크를 우선 반환.
+        필터 결과가 부족하면 전사 검색으로 자동 폴백한다.
         """
         doc_req = request["document_request"]
         coverage = request["coverage_conditions"]
@@ -182,18 +181,31 @@ class GenerationAgent:
         basic_items = " ".join(coverage.get("basic_coverage_items", []))
         noncovered = coverage.get("noncovered_rider_items", [])
 
-        # 문서 유형별로 검색 쿼리 핵심 키워드 조정
         if doc_type == "약관":
             type_kw = "보통약관 보장종목 보상하는 사항 보상하지 않는 사항"
+            meta_doc_type = "약관"
         elif doc_type == "상품설명서":
             type_kw = "상품요약서 보험금 지급사유 가입자격 유의사항"
-        else:  # 사업방법서
+            meta_doc_type = "상품요약서"
+        else:
             type_kw = "사업방법서 보험기간 가입나이 갱신 재가입"
+            meta_doc_type = "사업방법서"
 
         noncov_kw = " ".join(noncovered) if noncovered else ""
         query = f"{company} {product_name} {basic_items} {noncov_kw} {type_kw}".strip()
 
-        docs = self.retriever.invoke(query)
+        # 회사 + 문서유형 필터 우선 검색
+        where = {"$and": [{"company": company}, {"document_type": meta_doc_type}]}
+        docs = self._vectorstore.similarity_search(query, k=5, filter=where)
+
+        # 결과 부족 시 회사 필터만으로 폴백
+        if len(docs) < 2:
+            docs = self._vectorstore.similarity_search(query, k=5, filter={"company": company})
+
+        # 그래도 없으면 전사 검색
+        if not docs:
+            docs = self._vectorstore.similarity_search(query, k=5)
+
         return "\n\n---\n\n".join(d.page_content for d in docs)
 
     def _retrieve_legal_context(self, request: dict) -> Optional[str]:
