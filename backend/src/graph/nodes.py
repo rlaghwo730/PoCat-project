@@ -138,19 +138,27 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         situation = f"초안 생성 완료 (iteration {iteration}). 법규 검증을 실행합니다."
 
     elif last_role == "compliance":
-        if status == "PASS":
+        if state.get("post_edit_compliance_done", False):
+            # 3종 문서 최종 검증 완료 → 결과와 관계없이 END
+            next_step = "end"
+            situation = "최종 검증 완료. 워크플로우를 종료합니다."
+        elif status == "PASS":
             next_step = "edit"
-            situation = "법규 준수 확인. 위반 없음 — edit 노드에서 상품설명서·사업방법서를 생성합니다."
+            situation = "법규 준수 확인. edit 노드에서 3종 문서를 생성합니다."
         elif iteration >= 3:
             next_step = "edit"
-            situation = f"최대 반복({iteration}회) 도달. 잔여 위반항목 수동 검토 필요. edit 노드에서 나머지 문서를 생성합니다."
+            situation = f"최대 반복({iteration}회) 도달. edit 노드에서 나머지 문서를 생성합니다."
         else:
             next_step = "generation"
             situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 재생성합니다."
 
     elif last_role == "edit":
-        next_step = "end"
-        situation = "편집 완료. 워크플로우를 종료합니다."
+        if not state.get("post_edit_compliance_done", False):
+            next_step = "compliance"
+            situation = "편집 완료. 3종 문서(약관+상품설명서+사업방법서) 최종 검증을 실행합니다."
+        else:
+            next_step = "end"
+            situation = "최종 검증 완료. 워크플로우를 종료합니다."
 
     else:
         next_step = "generation"
@@ -243,10 +251,22 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     doc_req  = state["request"].get("document_request", {})
     session_id = state["request"].get("session_id", "langgraph-default")
 
+    # edit 후라면 3종 문서 모두 검증, 아니면 약관 초안만 검증
+    content_parts = []
+    if state.get("final_content"):
+        content_parts.append("=== 약관 ===\n" + state["final_content"])
+    elif state.get("draft_content"):
+        content_parts.append("=== 약관 ===\n" + state["draft_content"])
+    if state.get("product_description"):
+        content_parts.append("=== 상품설명서 ===\n" + state["product_description"])
+    if state.get("business_method"):
+        content_parts.append("=== 사업방법서 ===\n" + state["business_method"])
+    content = "\n\n".join(content_parts) if content_parts else state.get("draft_content", "")
+
     detection_input = DetectionInput(
         iteration=state["iteration"],
         section_type="약관",
-        content=state["draft_content"],
+        content=content,
         session_id=session_id,
         product_meta={"product_name": doc_req.get("product_name", "")},
         coverage_context=CoverageContext(
@@ -277,10 +297,12 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
+        is_post_edit = bool(state.get("final_content") or state.get("product_description"))
         return {
-            "violations": violations,
-            "status":     status,
-            "messages":   state["messages"] + [
+            "violations":               violations,
+            "status":                   status,
+            "post_edit_compliance_done": is_post_edit,
+            "messages":                 state["messages"] + [
                 {"role": "compliance", "content": f"검증 완료: {status} (위반 {len(violations)}건)"}
             ],
         }
@@ -288,9 +310,10 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     except Exception as e:
         logger.error("[compliance] 검증 실패: %s", e)
         return {
-            "violations": [],
-            "status":     "ERROR",
-            "messages":   state["messages"] + [
+            "violations":               [],
+            "status":                   "ERROR",
+            "post_edit_compliance_done": False,
+            "messages":                 state["messages"] + [
                 {"role": "compliance", "content": f"검증 오류 발생: {e}"}
             ],
         }

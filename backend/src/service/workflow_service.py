@@ -127,9 +127,10 @@ def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> 
         "final_content":       "",
         "product_description": "",
         "business_method":     "",
-        "status":              "",   # supervisor가 첫 판단 전까지 빈 문자열
-        "next_step":           "",
-        "langfuse_callbacks":  langfuse_callbacks or [],
+        "status":                    "",   # supervisor가 첫 판단 전까지 빈 문자열
+        "next_step":                 "",
+        "langfuse_callbacks":        langfuse_callbacks or [],
+        "post_edit_compliance_done": False,
     }
 
 
