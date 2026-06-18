@@ -12,6 +12,7 @@ from compliance_agent.models import (
     Violation,
     ViolationSummary,
 )
+from compliance_agent.final_validation.confidence_calculator import calculate
 
 _SEVERITY_ORDER = {
     Severity.CRITICAL: 0,
@@ -59,7 +60,7 @@ _REPAIR_CONSTRAINTS_TEMPLATE = {
 
 class FeedbackBuilder:
     def build(
-        self, violations: list[Violation], iteration: int
+        self, violations: list[Violation], iteration: int, content_length: int = 0
     ) -> ComplianceReport:
         sorted_violations = sorted(
             violations, key=lambda v: _SEVERITY_ORDER.get(v.severity, 9)
@@ -86,10 +87,12 @@ class FeedbackBuilder:
             if len(priority_fixes) >= _MAX_PRIORITY_FIXES:
                 break
         summary = self._build_summary(sorted_violations, priority_fixes)
+        compliance_score, _ = calculate(sorted_violations, content_length)
         return ComplianceReport(
             status="VIOLATIONS_FOUND",
             iteration=iteration,
             violations=sorted_violations,
+            compliance_score=compliance_score,
             feedback_to_generator=FeedbackToGenerator(
                 action="REGENERATE",
                 priority_fixes=priority_fixes,

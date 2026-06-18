@@ -1,9 +1,11 @@
 """
 루프 종료 조건을 판단한다.
-CLAUDE.md 종료 조건:
-  PASS       – violations == 0
-  FAIL_MAX   – iteration >= 3
-  FAIL_LOOP  – 동일 위반 2회 이상 반복
+종료 조건:
+  PASS            – violations == 0
+  PASS_THRESHOLD  – compliance_score >= ACCURACY_THRESHOLD (일부 위반 있어도 조기 종료)
+  FAIL_MAX        – iteration >= MAX_ITERATIONS
+  FAIL_LOOP       – deprecated: HARD_LOOP으로 대체
+  HARD_LOOP       – 위반 수 delta >= 0 (개선 없음) → GENERATOR_FAILURE
 """
 from __future__ import annotations
 
@@ -12,9 +14,13 @@ from enum import Enum
 from .iteration_tracker import IterationTracker, MAX_ITERATIONS
 from compliance_agent.models import Violation
 
+# 정확도 기반 조기 종료 임계치 (80% 이상이면 잔여 위반이 있어도 루프 종료)
+ACCURACY_THRESHOLD = 0.80
+
 
 class TerminationReason(str, Enum):
     PASS = "PASS"
+    PASS_THRESHOLD = "PASS_THRESHOLD"  # 정확도 임계치 달성으로 조기 종료
     FAIL_MAX = "FAIL_MAX"
     FAIL_LOOP = "FAIL_LOOP"   # deprecated: HARD_LOOP으로 대체
     HARD_LOOP = "HARD_LOOP"   # 위반 수 delta >= 0 (개선 없음) → GENERATOR_FAILURE
@@ -27,9 +33,13 @@ class TerminationLogic:
         violations: list[Violation],
         tracker: IterationTracker,
         current_iteration: int,
+        compliance_score: float = 0.0,
     ) -> TerminationReason:
         if not violations:
             return TerminationReason.PASS
+        # 정확도 임계치 달성 시 잔여 위반이 있어도 조기 종료
+        if compliance_score >= ACCURACY_THRESHOLD:
+            return TerminationReason.PASS_THRESHOLD
         # HARD_LOOP: 직전 대비 위반 수 감소 없음 → 생성 에이전트가 수렴 불가 판정
         if tracker.has_hard_loop():
             return TerminationReason.HARD_LOOP

@@ -43,6 +43,9 @@ class ComplianceReport:
     iteration: int
     violations: list[Violation] = field(default_factory=list)
 
+    # 준수율 점수 (0.0 ~ 1.0). PASS/FAIL 무관하게 항상 계산·반환.
+    compliance_score: float = 0.0
+
     # OUTPUT A 전용
     feedback_to_generator: FeedbackToGenerator | None = None
 
@@ -54,6 +57,8 @@ class ComplianceReport:
         base = {
             "status": self.status,
             "iteration": self.iteration,
+            "compliance_score": round(self.compliance_score, 4),
+            "compliance_score_pct": f"{self.compliance_score * 100:.1f}%",
             "violations": [
                 {
                     "violation_id": v.violation_id,
