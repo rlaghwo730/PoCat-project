@@ -40,13 +40,20 @@ MODELS = [
     "z-ai/glm-4.5-air:free",
 ]
 
-STEPS = [
+STEPS_GENERATE = [
     "기본 설정",
     "상품 설계 조건",
     "보장 조건",
     "확인 및 생성",
 ]
-TOTAL_STEPS = len(STEPS)
+STEPS_REVISE = [
+    "기본 설정",
+    "약관 업로드",
+    "보장 조건 (선택)",
+    "확인 및 검증",
+]
+WORKFLOW_MODE_GENERATE = "AI 조건 기반 생성"
+WORKFLOW_MODE_REVISE   = "직접 작성한 약관 검증·수정"
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3사 기본값 (JSON 데이터 기반)
@@ -147,6 +154,7 @@ NODE_EMOJI = {
     "generation":  "✍️",
     "compliance":  "⚖️",
     "edit":        "✏️",
+    "revise":      "🔧",
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -237,12 +245,105 @@ st.markdown("""
 # 세션 초기화
 # ────────────────────────────────────────────────────────────────────────────
 
+# Streamlit은 한 run에서 렌더링되지 않은 위젯의 session_state 값을 다음 run에서
+# 삭제한다. 이 앱은 STEP마다 다른 위젯만 렌더링하는 마법사 UI이므로, 아래 키들은
+# 사용자가 다른 STEP으로 이동하는 순간 사라지고 _init_session()이 회사 기본값으로
+# 되돌려버린다. _snapshot_form_fields()로 매 run마다 백업해 두고, _init_session()이
+# 키가 사라졌을 때 하드코딩된 기본값이 아니라 이 백업에서 복원하도록 한다.
+_PERSIST_FIELDS = [
+    "insurance_company", "insurance_type", "product_name", "product_version",
+    "premium_payment_cycle", "max_renewal_count", "join_age_min", "join_age_max",
+    "max_coverage_age", "fetal_enrollment", "policy_loan",
+    "noncovered_enabled", "three_major_enabled",
+    "coverage_limit_basic", "coverage_limit_noncovered", "coverage_limit_dosu",
+    "coverage_limit_injection", "coverage_limit_mri", "outpatient_limit",
+    "deductible_hospital", "deductible_major",
+]
+
+
+def _snapshot_form_fields():
+    """현재 session_state에 살아있는 폼 필드 값을 영구 백업에 복사.
+    매 run의 스텝 렌더링 직후 호출해야 한다."""
+    snap = st.session_state.setdefault("_form_snapshot", {})
+    for k in _PERSIST_FIELDS:
+        if k in st.session_state:
+            snap[k] = st.session_state[k]
+
+
+def _field(key: str, default=None):
+    """session_state에 키가 없으면(다른 STEP으로 이동해 위젯이 GC된 경우)
+    폼 스냅샷에서 복원해 반환한다. build_request 등 최종 읽기 지점에서 사용."""
+    if key in st.session_state:
+        return st.session_state[key]
+    return st.session_state.get("_form_snapshot", {}).get(key, default)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 영속 위젯 헬퍼
+#
+# 위 _PERSIST_FIELDS 키를 위젯의 key=로 직접 사용하면 안 된다 — 다른 STEP으로
+# 이동해 위젯이 다시 렌더링되지 않으면 Streamlit이 다음 run에서 그 값을 비우거나
+# 이전에 그 위젯이 가지고 있던 값으로 되돌리는 사례가 실측으로 확인됐다.
+# 따라서 위젯은 매번 별도의 내부 key(_w_<field>)로 새로 만들고, 항상 canonical
+# 값(_field)으로 명시적으로 시드한 뒤, 반환값을 canonical 키에 즉시 되돌려 쓴다.
+# ────────────────────────────────────────────────────────────────────────────
+
+def _p_text_input(label, field, default="", **kwargs):
+    wkey = f"_w_{field}"
+    if wkey not in st.session_state:
+        st.session_state[wkey] = _field(field, default)
+    val = st.text_input(label, key=wkey, **kwargs)
+    st.session_state[field] = val
+    return val
+
+
+def _p_number_input(label, field, default=0, **kwargs):
+    wkey = f"_w_{field}"
+    if wkey not in st.session_state:
+        st.session_state[wkey] = _field(field, default)
+    val = st.number_input(label, key=wkey, **kwargs)
+    st.session_state[field] = val
+    return val
+
+
+def _p_selectbox(label, options, field, default=None, **kwargs):
+    wkey = f"_w_{field}"
+    if wkey not in st.session_state:
+        cur = _field(field, default if default is not None else options[0])
+        st.session_state[wkey] = cur if cur in options else options[0]
+    val = st.selectbox(label, options, key=wkey, **kwargs)
+    st.session_state[field] = val
+    return val
+
+
+def _p_radio(label, options, field, default=None, **kwargs):
+    wkey = f"_w_{field}"
+    if wkey not in st.session_state:
+        cur = _field(field, default if default is not None else options[0])
+        st.session_state[wkey] = cur if cur in options else options[0]
+    val = st.radio(label, options, key=wkey, **kwargs)
+    st.session_state[field] = val
+    return val
+
+
+def _p_checkbox(label, field, default=False, **kwargs):
+    wkey = f"_w_{field}"
+    if wkey not in st.session_state:
+        st.session_state[wkey] = _field(field, default)
+    val = st.checkbox(label, key=wkey, **kwargs)
+    st.session_state[field] = val
+    return val
+
+
 def _init_session():
     if "current_step" not in st.session_state:
         st.session_state.current_step = 0
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid4())
+    if "workflow_mode" not in st.session_state:
+        st.session_state.workflow_mode = WORKFLOW_MODE_GENERATE
 
+    snap = st.session_state.get("_form_snapshot", {})
     defaults = COMPANY_DEFAULTS["삼성화재"]
     init_keys = {
         "insurance_company":  "삼성화재",
@@ -277,13 +378,17 @@ def _init_session():
     }
     for k, v in init_keys.items():
         if k not in st.session_state:
-            st.session_state[k] = v
+            st.session_state[k] = snap.get(k, v)
 
 
 def apply_company_defaults(company: str):
+    """회사 변경 시 호출. canonical 키와 위젯 키(_w_<field>)를 모두 갱신해야 한다 —
+    위젯이 이미 존재하는 상태에서는 value=/index= 인자가 무시되고 위젯 자신의
+    session_state 값이 우선하므로, 위젯 키를 직접 덮어써야 화면에 반영된다."""
     d = COMPANY_DEFAULTS.get(company, COMPANY_DEFAULTS["삼성화재"])
-    for f in d:
-        st.session_state[f] = d[f]
+    for f, v in d.items():
+        st.session_state[f] = v
+        st.session_state[f"_w_{f}"] = v
 
 
 _init_session()
@@ -301,9 +406,9 @@ def go_next(): st.session_state.current_step += 1
 # 스텝 인디케이터
 # ────────────────────────────────────────────────────────────────────────────
 
-def render_step_bar(current: int):
+def render_step_bar(current: int, steps: list):
     html = '<div class="step-bar">'
-    for i, label in enumerate(STEPS):
+    for i, label in enumerate(steps):
         if i < current:
             cls, circle = "done", "✓"
         elif i == current:
@@ -311,7 +416,7 @@ def render_step_bar(current: int):
         else:
             cls, circle = "", str(i + 1)
         html += f'<div class="step-item {cls}"><div class="step-circle">{circle}</div><span>{label}</span></div>'
-        if i < len(STEPS) - 1:
+        if i < len(steps) - 1:
             conn_cls = "done" if i < current else ""
             html += f'<div class="step-connector {conn_cls}"></div>'
     html += "</div>"
@@ -327,21 +432,64 @@ def render_step1():
     st.subheader("🏢 기본 설정")
     st.caption("보험사를 선택하면 해당 보험사의 실제 상품 기본값이 자동으로 채워집니다.")
 
-    st.selectbox(
+    _p_selectbox(
         "보험사",
         list(COMPANY_DEFAULTS.keys()),
-        key="insurance_company",
-        on_change=lambda: apply_company_defaults(st.session_state.insurance_company),
+        "insurance_company",
+        on_change=lambda: apply_company_defaults(st.session_state["_w_insurance_company"]),
     )
 
-    st.caption("ℹ️ 약관·상품설명서·사업방법서 3개 문서를 한 번에 생성합니다.")
+    st.divider()
+    if st.session_state.workflow_mode == WORKFLOW_MODE_GENERATE:
+        st.caption("ℹ️ 약관·상품설명서·사업방법서 3개 문서를 한 번에 생성합니다.")
+    else:
+        st.caption("ℹ️ 업로드한 약관을 검증→수정 반복 후 최종 약관만 출력합니다.")
 
     st.divider()
-    st.text_input("상품명",          key="product_name",    help="보험사 변경 시 자동 업데이트")
-    st.text_input("버전 / 상품코드", key="product_version")
-    st.selectbox("보험 유형", ["기본형 실손의료비보험", "특약 포함 실손의료비보험"], key="insurance_type")
+    _p_text_input("상품명",          "product_name",    help="보험사 변경 시 자동 업데이트")
+    _p_text_input("버전 / 상품코드", "product_version")
+    _p_selectbox("보험 유형", ["기본형 실손의료비보험", "특약 포함 실손의료비보험"], "insurance_type")
 
     return True  # STEP 1은 항상 다음으로 진행 가능
+
+
+def _extract_text_from_upload(uploaded_file) -> str:
+    """업로드 파일(.docx/.txt)에서 텍스트를 추출."""
+    name = uploaded_file.name.lower()
+    data = uploaded_file.read()
+    if name.endswith(".docx"):
+        from docx import Document
+        doc = Document(io.BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs)
+    return data.decode("utf-8", errors="ignore")
+
+
+def render_step2_revise():
+    """STEP 2 (검증·수정 모드): 사용자 작성 약관 업로드"""
+    st.subheader("📤 약관 업로드")
+    st.caption(
+        "직접 작성한 약관 전문을 .docx 또는 .txt 파일로 업로드하세요. "
+        "AI 생성 단계 없이 법규 검증 → 수정을 반복하여 최종 약관을 출력합니다."
+    )
+
+    uploaded = st.file_uploader("약관 파일", type=["docx", "txt"], key="_user_doc_upload")
+    if uploaded is not None:
+        try:
+            text = _extract_text_from_upload(uploaded)
+            st.session_state.user_document_text = text
+            st.session_state.user_document_name = uploaded.name
+        except Exception as e:
+            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
+
+    text = st.session_state.get("user_document_text", "")
+    if text:
+        st.success(f"✅ {st.session_state.get('user_document_name', '')} ({len(text):,}자) 업로드 완료")
+        with st.expander("📄 업로드된 약관 미리보기"):
+            st.text(text[:3000] + ("..." if len(text) > 3000 else ""))
+    else:
+        st.warning("⚠️ 약관 파일을 업로드해야 다음 단계로 진행할 수 있습니다.")
+
+    return bool(text)
 
 
 def render_step2():
@@ -359,7 +507,7 @@ def render_step2():
         st.text_input("보험료 납입기간", value="전기납", disabled=True, key="_fp_pay")
         st.caption("✔ 전기납 고정")
 
-        st.selectbox("보험료 납입주기", ["월납", "3개월납", "6개월납", "연납"], key="premium_payment_cycle")
+        _p_selectbox("보험료 납입주기", ["월납", "3개월납", "6개월납", "연납"], "premium_payment_cycle")
 
         st.divider()
         st.markdown("**🔁 갱신**")
@@ -369,34 +517,36 @@ def render_step2():
         st.text_input("갱신 주기", value="1년", disabled=True, key="_fp_rcycle")
         st.caption("✔ 1년 고정")
 
-        st.number_input("최대 갱신 횟수", min_value=1, max_value=10, step=1, key="max_renewal_count")
+        _p_number_input("최대 갱신 횟수", "max_renewal_count", default=4, min_value=1, max_value=10, step=1)
 
         st.text_input("재가입 주기", value="5년", disabled=True, key="_fp_reinstate")
         st.caption("✔ 5년 고정")
 
     with col_b:
         st.markdown("**👤 가입 조건**")
-        company = st.session_state.get("insurance_company", "삼성화재")
+        company = _field("insurance_company", "삼성화재")
         age_hints = {"삼성화재": "0세 / 65세", "현대해상": "태아 / 60세", "DB손해보험": "5세 / 99세"}
         st.caption(f"ℹ️ {company} 기본: {age_hints.get(company, '')}")
 
         defaults = COMPANY_DEFAULTS.get(company, COMPANY_DEFAULTS["삼성화재"])
-        st.text_input(
+        _p_text_input(
             "가입 최소 나이",
-            key="join_age_min",
+            "join_age_min",
+            default=defaults["join_age_min"],
             placeholder=defaults["join_age_min"],
         )
-        st.text_input(
+        _p_text_input(
             "가입 최대 나이",
-            key="join_age_max",
+            "join_age_max",
+            default=defaults["join_age_max"],
             placeholder=defaults["join_age_max"],
         )
-        st.number_input("최대 보장 나이 (세)", min_value=70, max_value=120, step=1, key="max_coverage_age")
+        _p_number_input("최대 보장 나이 (세)", "max_coverage_age", default=100, min_value=70, max_value=120, step=1)
 
         st.divider()
         st.markdown("**🍼 특수 조건**")
-        st.radio("태아 가입 가능 여부", ["가능", "불가"], horizontal=True, key="fetal_enrollment")
-        st.radio("보험계약대출 가능 여부", ["가능", "불가"], horizontal=True, key="policy_loan")
+        _p_radio("태아 가입 가능 여부", ["가능", "불가"], "fetal_enrollment", default="가능", horizontal=True)
+        _p_radio("보험계약대출 가능 여부", ["가능", "불가"], "policy_loan", default="가능", horizontal=True)
 
     # 필수 항목 유효성 검사
     missing = [
@@ -409,12 +559,19 @@ def render_step2():
     return True
 
 
-def render_step3():
-    """STEP 3: 보장 조건"""
+def render_step3(required: bool = True):
+    """STEP 3: 보장 조건
+
+    required=False (검증·수정 모드): 입력하지 않아도 다음 단계로 진행 가능.
+    미입력 시 compliance 검증은 보편적 법규 기준만으로 수행된다.
+    """
     st.subheader("🏥 보장 조건")
+    if not required:
+        st.caption("ℹ️ 선택 입력입니다. 비워두면 보편적 법규 기준으로만 검증합니다.")
 
     # 기본 보장 종목
-    st.markdown("**기본 보장 종목** (약관 제1조 기준, 1개 이상 필수)")
+    label = "**기본 보장 종목** (약관 제1조 기준, 1개 이상 필수)" if required else "**기본 보장 종목** (선택)"
+    st.markdown(label)
     basic_items = st.session_state.get("basic_coverage_items", [])
     col_b1, col_b2 = st.columns(2)
     with col_b1:
@@ -427,13 +584,16 @@ def render_step3():
     new_basic = (["상해급여"] if injury else []) + (["질병급여"] if disease else [])
     st.session_state.basic_coverage_items = new_basic
     if not new_basic:
-        st.error("⚠️ 기본 보장 종목을 최소 1개 이상 선택해야 합니다.")
+        if required:
+            st.error("⚠️ 기본 보장 종목을 최소 1개 이상 선택해야 합니다.")
+        else:
+            st.caption("※ 미선택 시 보장 한도·자기부담금 검증은 생략됩니다.")
 
     st.divider()
 
     # 비급여 특약
     st.markdown("**비급여 특약** (선택사항)")
-    noncov = st.checkbox("비급여 실손의료비 특약 포함", key="noncovered_enabled",
+    noncov = _p_checkbox("비급여 실손의료비 특약 포함", "noncovered_enabled",
                          help="중증·비중증 비급여 의료비 보상 특약")
     if noncov:
         st.session_state.noncovered_rider_items = [
@@ -442,7 +602,7 @@ def render_step3():
             "[갱신형]비중증 비급여 실손의료비 특별약관(상해)",
             "[갱신형]비중증 비급여 실손의료비 특별약관(질병)",
         ]
-        three_major = st.checkbox("3대 비급여 세부항목 포함 (도수치료·주사료·MRI)", key="three_major_enabled")
+        three_major = _p_checkbox("3대 비급여 세부항목 포함 (도수치료·주사료·MRI)", "three_major_enabled")
         if three_major:
             st.session_state.three_major_noncovered_items = [
                 "[갱신형]중증 비급여 실손의료비 특별약관(3대비급여)",
@@ -477,7 +637,6 @@ def render_step3():
         with col_3a: _sel(st, "도수치료 한도", DOSU_LIMIT_OPTIONS,      "coverage_limit_dosu")
         with col_3b: _sel(st, "주사료 한도",   INJECTION_LIMIT_OPTIONS, "coverage_limit_injection")
         with col_3c:
-            company = st.session_state.get("insurance_company", "삼성화재")
             _sel(st, "MRI/MRA 한도", MRI_LIMIT_OPTIONS, "coverage_limit_mri",
                  help="DB손해보험 200만원 / 삼성·현대 300만원")
 
@@ -490,25 +649,19 @@ def render_step3():
     with col_d2: _sel(st, "상급종합병원 통원",  DEDUCTIBLE_OPTIONS, "deductible_major",
                       index_default=1)
 
-    return bool(new_basic)
+    return bool(new_basic) if required else True
 
 
 def _sel(parent, label, options, key, disabled=False, help="", index_default=0):
-    """selectbox 헬퍼 — 현재 session_state 값 기준으로 index 자동 설정"""
-    cur = st.session_state.get(key)
-    try:
-        idx = options.index(cur) if cur in options else index_default
-    except ValueError:
-        idx = index_default
-    parent.selectbox(label, options, index=idx, key=key, disabled=disabled, help=help)
+    """selectbox 헬퍼 — _p_selectbox 기반으로 STEP 이동 후에도 값을 안전하게 유지"""
+    default = options[index_default] if 0 <= index_default < len(options) else options[0]
+    _p_selectbox(label, options, key, default=default, disabled=disabled, help=help)
 
 
 def render_step4():
-    """STEP 4: 확인 및 생성"""
-    st.subheader("✅ 입력 확인")
-    st.caption("아래 내용으로 초안을 생성합니다. 수정이 필요하면 이전 단계로 돌아가세요.")
-
+    """STEP 4: 확인 및 생성/검증"""
     s = st.session_state
+    is_revise_mode = s.get("workflow_mode") == WORKFLOW_MODE_REVISE
 
     def card(title, rows):
         html = f'<div class="summary-card"><h4>{title}</h4>'
@@ -519,22 +672,44 @@ def render_step4():
         html += "</div>"
         st.markdown(html, unsafe_allow_html=True)
 
+    if is_revise_mode:
+        st.subheader("✅ 확인 및 검증")
+        st.caption("업로드한 약관을 법규 검증→수정 반복 후 최종 약관만 출력합니다.")
+
+        card("기본 설정", [
+            ("보험사",    _field("insurance_company", "-")),
+            ("상품명",    _field("product_name", "-")),
+            ("버전/코드", _field("product_version", "-")),
+        ])
+        card("업로드된 약관", [
+            ("파일명", s.get("user_document_name", "-")),
+            ("글자 수", f"{len(s.get('user_document_text', '')):,}자"),
+        ])
+        basic = s.get("basic_coverage_items", [])
+        card("보장 조건 (선택 입력)", [
+            ("기본 보장 종목", ", ".join(basic) if basic else "미입력 — 보편적 법규만 검증"),
+        ])
+        return
+
+    st.subheader("✅ 입력 확인")
+    st.caption("아래 내용으로 초안을 생성합니다. 수정이 필요하면 이전 단계로 돌아가세요.")
+
     card("기본 설정", [
-        ("보험사",    s.get("insurance_company", "-")),
-        ("상품명",    s.get("product_name", "-")),
-        ("버전/코드", s.get("product_version", "-")),
-        ("보험 유형", s.get("insurance_type", "-")),
+        ("보험사",    _field("insurance_company", "-")),
+        ("상품명",    _field("product_name", "-")),
+        ("버전/코드", _field("product_version", "-")),
+        ("보험 유형", _field("insurance_type", "-")),
     ])
 
     card("상품 설계 조건", [
         ("보험기간",       s.get("policy_period", "-")),
-        ("납입기간/주기",  f"{s.get('premium_payment_period','-')} / {s.get('premium_payment_cycle','-')}"),
-        ("갱신",           f"{s.get('renewal_type','-')} ({s.get('renewal_period','-')}, 최대 {s.get('max_renewal_count','-')}회)"),
+        ("납입기간/주기",  f"{s.get('premium_payment_period','-')} / {_field('premium_payment_cycle','-')}"),
+        ("갱신",           f"{s.get('renewal_type','-')} ({s.get('renewal_period','-')}, 최대 {_field('max_renewal_count','-')}회)"),
         ("재가입 주기",    s.get("reinstatement_cycle", "-")),
-        ("가입나이",       f"{s.get('join_age_min','-')} ~ {s.get('join_age_max','-')}"),
-        ("최대 보장나이",  f"{s.get('max_coverage_age','-')}세"),
-        ("태아 가입",      s.get("fetal_enrollment", "-")),
-        ("보험계약대출",   s.get("policy_loan", "-")),
+        ("가입나이",       f"{_field('join_age_min','-')} ~ {_field('join_age_max','-')}"),
+        ("최대 보장나이",  f"{_field('max_coverage_age','-')}세"),
+        ("태아 가입",      _field("fetal_enrollment", "-")),
+        ("보험계약대출",   _field("policy_loan", "-")),
     ])
 
     basic        = s.get("basic_coverage_items", [])
@@ -544,20 +719,20 @@ def render_step4():
         ("기본 보장 종목",  ", ".join(basic) if basic else "미선택"),
         ("비급여 특약",     "포함" if noncov_items else "미포함"),
         ("3대 비급여 특약", "포함" if three_items  else "미포함"),
-        ("급여 연간 한도",  s.get("coverage_limit_basic",  "-")),
-        ("통원 1회 한도",   s.get("outpatient_limit",       "-")),
+        ("급여 연간 한도",  _field("coverage_limit_basic",  "-")),
+        ("통원 1회 한도",   _field("outpatient_limit",       "-")),
     ]
     if noncov_items:
-        cov_rows.append(("비급여 연간 한도", s.get("coverage_limit_noncovered", "-")))
+        cov_rows.append(("비급여 연간 한도", _field("coverage_limit_noncovered", "-")))
     if three_items:
         cov_rows += [
-            ("도수치료 한도", s.get("coverage_limit_dosu",      "-")),
-            ("주사료 한도",   s.get("coverage_limit_injection",  "-")),
-            ("MRI/MRA 한도",  s.get("coverage_limit_mri",        "-")),
+            ("도수치료 한도", _field("coverage_limit_dosu",      "-")),
+            ("주사료 한도",   _field("coverage_limit_injection",  "-")),
+            ("MRI/MRA 한도",  _field("coverage_limit_mri",        "-")),
         ]
     cov_rows += [
-        ("일반 통원 공제", s.get("deductible_hospital", "-")),
-        ("종합병원 공제",  s.get("deductible_major",    "-")),
+        ("일반 통원 공제", _field("deductible_hospital", "-")),
+        ("종합병원 공제",  _field("deductible_major",    "-")),
     ]
     card("보장 조건", cov_rows)
 
@@ -571,43 +746,82 @@ def build_request(model=None) -> dict:
     return {
         "document_request": {
             "document_type":     "전체",   # 약관·상품설명서·사업방법서 일괄 생성
-            "insurance_company": s.get("insurance_company", "삼성화재"),
-            "insurance_type":    s.get("insurance_type", "기본형 실손의료비보험"),
-            "product_name":      s.get("product_name", ""),
-            "product_version":   s.get("product_version", ""),
+            "insurance_company": _field("insurance_company", "삼성화재"),
+            "insurance_type":    _field("insurance_type", "기본형 실손의료비보험"),
+            "product_name":      _field("product_name", ""),
+            "product_version":   _field("product_version", ""),
             "dividend_type":     "무배당",
         },
         "product_design_conditions": {
             "policy_period":          s.get("policy_period", "1년 만기"),
             "premium_payment_period": s.get("premium_payment_period", "전기납"),
-            "premium_payment_cycle":  s.get("premium_payment_cycle", "월납"),
+            "premium_payment_cycle":  _field("premium_payment_cycle", "월납"),
             "renewal_type":           s.get("renewal_type", "갱신형"),
             "renewal_period":         s.get("renewal_period", "1년"),
-            "max_renewal_count":      s.get("max_renewal_count", 4),
+            "max_renewal_count":      _field("max_renewal_count", 4),
             "reinstatement_cycle":    s.get("reinstatement_cycle", "5년"),
-            "max_coverage_age":       s.get("max_coverage_age", 100),
-            "join_age_min":           s.get("join_age_min", "0세"),
-            "join_age_max":           s.get("join_age_max", "65세"),
-            "fetal_enrollment":       s.get("fetal_enrollment", "가능"),
-            "policy_loan":            s.get("policy_loan", "가능"),
+            "max_coverage_age":       _field("max_coverage_age", 100),
+            "join_age_min":           _field("join_age_min", "0세"),
+            "join_age_max":           _field("join_age_max", "65세"),
+            "fetal_enrollment":       _field("fetal_enrollment", "가능"),
+            "policy_loan":            _field("policy_loan", "가능"),
         },
         "coverage_conditions": {
             "basic_coverage_items":         s.get("basic_coverage_items", []),
             "noncovered_rider_items":       s.get("noncovered_rider_items", []),
             "three_major_noncovered_items": s.get("three_major_noncovered_items", []),
             "coverage_limit": {
-                "급여":     s.get("coverage_limit_basic",       "5천만원"),
-                "비급여":   s.get("coverage_limit_noncovered",  "5천만원"),
-                "도수치료": s.get("coverage_limit_dosu",        "350만원"),
-                "주사료":   s.get("coverage_limit_injection",   "250만원"),
-                "MRI":      s.get("coverage_limit_mri",         "300만원"),
+                "급여":     _field("coverage_limit_basic",       "5천만원"),
+                "비급여":   _field("coverage_limit_noncovered",  "5천만원"),
+                "도수치료": _field("coverage_limit_dosu",        "350만원"),
+                "주사료":   _field("coverage_limit_injection",   "250만원"),
+                "MRI":      _field("coverage_limit_mri",         "300만원"),
             },
-            "outpatient_limit": s.get("outpatient_limit", "20만원"),
+            "outpatient_limit": _field("outpatient_limit", "20만원"),
             "deductible_rule": {
-                "일반_의료기관": s.get("deductible_hospital", ""),
-                "상급종합병원":  s.get("deductible_major",    ""),
+                "일반_의료기관": _field("deductible_hospital", ""),
+                "상급종합병원":  _field("deductible_major",    ""),
             },
         },
+        "session_id": s.session_id,
+        "model": model,
+    }
+
+
+def build_revise_request(model=None) -> dict:
+    """검증·수정 모드 요청 빌더 — 사용자 작성 약관 전문을 user_document로 전달.
+    보장 조건은 STEP 3에서 입력한 만큼만 채우고, 미입력 시 빈 값으로 보내
+    compliance가 보편적 법규 기준으로만 검증하도록 한다."""
+    s = st.session_state
+    basic_items = s.get("basic_coverage_items", [])
+    return {
+        "document_request": {
+            "document_type":     "약관",
+            "insurance_company": _field("insurance_company", ""),
+            "insurance_type":    _field("insurance_type", "기본형 실손의료비보험"),
+            "product_name":      _field("product_name", ""),
+            "product_version":   _field("product_version", ""),
+            "dividend_type":     "무배당",
+        },
+        "product_design_conditions": {},
+        "coverage_conditions": {
+            "basic_coverage_items":         basic_items,
+            "noncovered_rider_items":       s.get("noncovered_rider_items", []),
+            "three_major_noncovered_items": s.get("three_major_noncovered_items", []),
+            "coverage_limit": {
+                "급여":     _field("coverage_limit_basic", ""),
+                "비급여":   _field("coverage_limit_noncovered", ""),
+                "도수치료": _field("coverage_limit_dosu", ""),
+                "주사료":   _field("coverage_limit_injection", ""),
+                "MRI":      _field("coverage_limit_mri", ""),
+            } if basic_items else {},
+            "outpatient_limit": _field("outpatient_limit", ""),
+            "deductible_rule": {
+                "일반_의료기관": _field("deductible_hospital", ""),
+                "상급종합병원":  _field("deductible_major", ""),
+            } if basic_items else {},
+        },
+        "user_document": s.get("user_document_text", ""),
         "session_id": s.session_id,
         "model": model,
     }
@@ -711,8 +925,9 @@ def _to_docx_bytes(title: str, content: str) -> bytes:
 # 결과 패널
 # ────────────────────────────────────────────────────────────────────────────
 
-def render_result_panel(result: dict, model_label: str):
+def render_result_panel(result: dict, model_label: str, show_all_docs: bool = True):
     final_status = result.get("status", "")
+    action_word = "생성" if show_all_docs else "수정"
     score_pct = float(result.get("compliance_score_pct", 0.0))
     if final_status == "COMPLIANCE_PASSED":
         st.success(
@@ -720,7 +935,7 @@ def render_result_panel(result: dict, model_label: str):
             f"({model_label} / 세션: {st.session_state.session_id[:8]}…)"
         )
     elif final_status == "MANUAL_REVIEW_REQUIRED":
-        st.error(f"⚠️ 최대 {MAX_ITERATIONS}회 재생성 후에도 법규 준수 미달. 수동 검토 필요.")
+        st.error(f"⚠️ 최대 {MAX_ITERATIONS}회 재{action_word} 후에도 법규 준수 미달. 수동 검토 필요.")
         if result.get("suggestions"):
             with st.expander("📋 수동 검토 필요 항목"):
                 for s in result["suggestions"]:
@@ -737,7 +952,7 @@ def render_result_panel(result: dict, model_label: str):
 
     st.metric("종합 법규 준수율", f"{score_pct:.1f}%")
     document_scores = result.get("document_compliance_scores", {})
-    if document_scores:
+    if show_all_docs and document_scores:
         score_columns = st.columns(len(document_scores))
         for column, details in zip(score_columns, document_scores.values()):
             column.metric(
@@ -745,11 +960,26 @@ def render_result_panel(result: dict, model_label: str):
                 f"{float(details.get('compliance_score_pct', 0.0)):.1f}%",
             )
 
-    # 항상 3탭 고정
-    tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
-
     product_name = st.session_state.get("product_name", "보험상품")
     company      = st.session_state.get("insurance_company", "")
+
+    if not show_all_docs:
+        # 검증·수정 모드: 약관만 출력 (상품설명서·사업방법서는 생성하지 않음)
+        st.markdown("### 📜 최종 약관")
+        content = result.get("content", "")
+        highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
+        st.markdown(highlighted, unsafe_allow_html=True)
+        if content:
+            st.download_button(
+                "⬇️ 약관 다운로드 (.docx)",
+                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                file_name=f"{company}_{product_name}_약관.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        return
+
+    # 항상 3탭 고정 (AI 생성 모드)
+    tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
 
     with tab_clause:
         content = result.get("content", "")
@@ -795,27 +1025,46 @@ st.caption(
     "삼성화재·현대해상·DB손해보험 실제 데이터를 기반으로 "
     "약관·상품설명서·사업방법서 초안을 생성하고 법령 검증을 수행합니다."
 )
+
+# 모드 토글은 모든 스텝에서 항상 렌더링해야 한다 — Streamlit은 렌더링되지 않은
+# 위젯의 session_state 값을 다음 run에서 제거하므로, STEP 1에만 두면 다른
+# 스텝으로 이동한 순간 워크플로우 모드가 기본값으로 되돌아간다.
+st.radio(
+    "약관 작성 방식",
+    [WORKFLOW_MODE_GENERATE, WORKFLOW_MODE_REVISE],
+    key="workflow_mode",
+    horizontal=True,
+    on_change=lambda: st.session_state.update(current_step=0),
+    help="AI 생성: 조건을 입력하면 약관을 새로 작성합니다. "
+         "직접 작성: 이미 작성된 약관 파일을 업로드하면 생성 단계 없이 법규 검증·수정만 수행합니다.",
+)
 st.divider()
 
 col_form, col_result = st.columns([4, 6], gap="large")
 
 generate_btn = False
 run_all_btn  = False
+revise_btn   = False
+is_revise_mode = st.session_state.workflow_mode == WORKFLOW_MODE_REVISE
+steps = STEPS_REVISE if is_revise_mode else STEPS_GENERATE
+total_steps = len(steps)
 
 with col_form:
-    current_step = st.session_state.current_step
-    render_step_bar(current_step)
+    current_step = min(st.session_state.current_step, total_steps - 1)
+    render_step_bar(current_step, steps)
     st.divider()
 
     can_proceed = True
     if current_step == 0:
         can_proceed = render_step1()
     elif current_step == 1:
-        can_proceed = render_step2()
+        can_proceed = render_step2_revise() if is_revise_mode else render_step2()
     elif current_step == 2:
-        can_proceed = render_step3()
+        can_proceed = render_step3(required=not is_revise_mode)
     elif current_step == 3:
         render_step4()
+
+    _snapshot_form_fields()
 
     st.divider()
     col_prev, col_next = st.columns(2)
@@ -825,9 +1074,18 @@ with col_form:
             st.button("← 이전", on_click=go_prev, use_container_width=True)
 
     with col_next:
-        if current_step < TOTAL_STEPS - 1:
+        if current_step < total_steps - 1:
             st.button("다음 →", type="primary", on_click=go_next,
                       use_container_width=True, disabled=not can_proceed)
+        elif is_revise_mode:
+            can_gen = bool(st.session_state.get("user_document_text", ""))
+            revise_btn = st.button(
+                "🔍 검증·수정 시작",
+                type="primary", use_container_width=True, disabled=not can_gen,
+                help="업로드한 약관을 법규 기준으로 검증하고 위반 항목만 수정합니다 (생성 단계 없음).",
+            )
+            if not can_gen:
+                st.warning("⚠️ STEP 2에서 약관 파일을 업로드하세요.")
         else:
             can_gen = bool(st.session_state.get("basic_coverage_items", []))
 
@@ -849,15 +1107,41 @@ with col_form:
 # ────────────────────────────────────────────────────────────────────────────
 
 with col_result:
-    st.subheader("생성된 초안")
+    st.subheader("검증·수정 결과" if is_revise_mode else "생성된 초안")
 
-    if generate_btn or run_all_btn:
-        if (st.session_state.get("fetal_enrollment") == "불가"
+    if generate_btn or run_all_btn or revise_btn:
+        if (not is_revise_mode
+                and st.session_state.get("fetal_enrollment") == "불가"
                 and st.session_state.get("join_age_min") == "태아"):
             st.error("⚠️ 태아 가입 불가 설정이지만 최소 가입나이가 태아입니다. STEP 2를 확인하세요.")
         else:
             try:
-                if generate_btn:
+                if revise_btn:
+                    with st.status("약관 검증·수정 중...", expanded=True) as status_box:
+                        request = build_revise_request(model=None)
+                        response = requests.post(
+                            f"{BACKEND_URL}/generate/stream",
+                            json=request, stream=True, timeout=300,
+                        )
+                        response.raise_for_status()
+                        result = None
+                        for event in sseclient.SSEClient(response).events():
+                            if event.data == "[DONE]":
+                                break
+                            data = json.loads(event.data)
+                            if data.get("type") == "progress":
+                                node = data.get("node", "")
+                                if node:
+                                    st.write(f"{NODE_EMOJI.get(node,'⚙️')} **{node}** 완료 (iter {data.get('iteration',0)})")
+                            elif data.get("type") == "result":
+                                result = data
+                            elif data.get("type") == "error":
+                                raise Exception(data.get("message", "스트리밍 오류"))
+                        if result is None:
+                            raise Exception("결과를 받지 못했습니다.")
+                        model_used = result.get("model_used", "Upstage Solar")
+                        st.write(f"✅ 검증·수정 완료: {model_used}")
+                elif generate_btn:
                     with st.status("초안 생성 중...", expanded=True) as status_box:
                         request = build_request(model=None)
                         response = requests.post(
@@ -891,8 +1175,9 @@ with col_result:
                         st.write(f"✅ 최적 결과 선택: {model_used}")
 
                 final_status = result.get("status", "")
+                action_word = "검토" if revise_btn else "재생성"
                 label = (
-                    f"초안 생성 완료 — {result.get('iteration','?')}회 검토 통과 ({model_used})"
+                    f"{'검증·수정' if revise_btn else '초안 생성'} 완료 — {result.get('iteration','?')}회 검토 통과 ({model_used})"
                     if final_status == "COMPLIANCE_PASSED"
                     else f"최대 {MAX_ITERATIONS}회 도달 — 수동 검토 필요"
                     if final_status == "MANUAL_REVIEW_REQUIRED"
@@ -906,6 +1191,7 @@ with col_result:
                 status_box.update(label=label, state=state)
                 st.session_state.generation_result = result
                 st.session_state.generation_model  = model_used
+                st.session_state.generation_show_all_docs = not revise_btn
 
             except requests.exceptions.HTTPError as e:
                 st.error(f"오류 발생: {e}")
@@ -919,15 +1205,31 @@ with col_result:
         render_result_panel(
             st.session_state.generation_result,
             st.session_state.get("generation_model", "Upstage Solar"),
+            show_all_docs=st.session_state.get("generation_show_all_docs", True),
         )
-    elif not (generate_btn or run_all_btn):
+    elif not (generate_btn or run_all_btn or revise_btn):
         company = st.session_state.get("insurance_company", "삼성화재")
-        st.info(
-            f"**현재 설정:** {company}\n\n"
-            "좌측 폼을 모두 입력한 후 **STEP 4**에서 생성 버튼을 클릭하세요.\n\n"
-            "약관·상품설명서·사업방법서 3개 문서가 한 번에 생성됩니다."
-        )
-        st.markdown("""
+        if is_revise_mode:
+            st.info(
+                f"**현재 설정:** {company}\n\n"
+                "좌측에서 약관 파일을 업로드한 후 **STEP 4**에서 검증·수정을 시작하세요.\n\n"
+                "AI 생성 단계 없이 법규 검증 → 수정을 반복하여 최종 약관만 출력합니다."
+            )
+            st.markdown("""
+**검증·수정 흐름**
+1. 🔍 **Coordinator** — 요청 유효성 검증
+2. 📋 **Planner** — 실행 계획 수립
+3. ⚖️ **Compliance** — 업로드된 약관 법규 검증
+4. 🎯 **Supervisor** — 통과/재검증 결정
+5. 🔧 **Revise** — 위반 항목만 수정 후 재검증 (반복)
+            """)
+        else:
+            st.info(
+                f"**현재 설정:** {company}\n\n"
+                "좌측 폼을 모두 입력한 후 **STEP 4**에서 생성 버튼을 클릭하세요.\n\n"
+                "약관·상품설명서·사업방법서 3개 문서가 한 번에 생성됩니다."
+            )
+            st.markdown("""
 **생성 흐름 (LangManus 아키텍처)**
 1. 🔍 **Coordinator** — 요청 유효성 검증
 2. 📋 **Planner** — 실행 계획 수립
@@ -935,7 +1237,7 @@ with col_result:
 4. ⚖️ **Compliance** — 법규 준수 검증 (5개 룰)
 5. 🎯 **Supervisor** — 재생성 or 편집 결정
 6. ✏️ **Edit** — 최종 편집 및 다중 문서 생성
-        """)
+            """)
         with st.expander("📊 3사 데이터 비교"):
             st.markdown("""
 | 항목 | 삼성화재 | 현대해상 | DB손해보험 |

@@ -1,11 +1,17 @@
 """LangGraph 노드 함수 정의
 
-플로우:
+플로우 (AI 생성 모드):
   START → coordinator → planner → supervisor(허브)
   supervisor → generation → supervisor
   supervisor → compliance → supervisor
   supervisor → edit → supervisor
   supervisor → END
+
+플로우 (사용자 작성 약관 검증·수정 모드, request.user_document 존재 시):
+  START → coordinator → planner → supervisor(허브)
+  supervisor → compliance → supervisor   (generation 건너뜀)
+  supervisor → revise → supervisor       (compliance FAIL 시 위반만 수정, 반복)
+  supervisor → END                       (PASS 또는 최대 반복 도달 시, 약관만 출력)
 """
 from __future__ import annotations
 
@@ -23,7 +29,7 @@ from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor
 # ── A2A 보조 레이어 ───────────────────────────────────────────────────────────
 # 기존 라우팅(builder.py의 edge)은 그대로 두고, 노드 간 전달 내용을
 # 표준 A2A 메시지로 기록하기 위한 helper. 실행 흐름에는 영향을 주지 않는다.
-from ..a2a import create_a2a_message, append_a2a_message, A2AStatus
+from ..A2A import create_a2a_message, append_a2a_message, A2AStatus
 
 logger = logging.getLogger(__name__)
 
@@ -147,19 +153,44 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
     iteration = state.get("iteration", 0)
     status = state.get("status", "")
     violations = state.get("violations", [])
+    is_revise_mode = bool(state["request"].get("user_document"))
     compliance_next_action = state.get("compliance_next_action", "")
+    extra: dict = {}
 
     # ── 규칙 기반 라우팅 결정 ──────────────────────────────────────────────────
     if last_role == "planner":
-        next_step = "generation"
-        situation = "작업 계획 완료. 약관 초안 생성을 시작합니다."
+        if is_revise_mode:
+            next_step = "compliance"
+            situation = "사용자 작성 약관 확인. 생성 단계를 건너뛰고 법규 검증을 시작합니다."
+        else:
+            next_step = "generation"
+            situation = "작업 계획 완료. 약관 초안 생성을 시작합니다."
 
     elif last_role == "generation":
         next_step = "compliance"
         situation = f"초안 생성 완료 (iteration {iteration}). 법규 검증을 실행합니다."
 
     elif last_role == "compliance":
-        if state.get("post_edit_compliance_done", False):
+        if is_revise_mode:
+            # 사용자 작성 약관 모드: generation/edit을 타지 않으므로 compliance_next_action도
+            # 여기서 직접 종료 조건으로 반영한다 (post_edit_compliance_done은 edit을 거치지
+            # 않으므로 해당 없음).
+            if status == "PASS":
+                next_step = "end"
+                extra["final_content"] = state["draft_content"]
+                situation = "법규 준수 확인. 위반 없음 — 최종 약관을 출력합니다."
+            elif (
+                iteration >= 3
+                or compliance_next_action.startswith("GENERATOR_FAILURE")
+                or compliance_next_action == "MANUAL_REVIEW_REQUIRED"
+            ):
+                next_step = "end"
+                extra["final_content"] = state["draft_content"]
+                situation = f"최대 반복({iteration}회) 도달 또는 수동 검토 필요 — 최종 약관을 출력합니다."
+            else:
+                next_step = "revise"
+                situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 약관을 수정합니다."
+        elif state.get("post_edit_compliance_done", False):
             # 최종 검증 후 종료하되 실패는 수동 검토 상태로 보존한다.
             next_step = "end"
             situation = (
@@ -183,6 +214,10 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
             next_step = "generation"
             situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 재생성합니다."
 
+    elif last_role == "revise":
+        next_step = "compliance"
+        situation = "약관 수정 완료. 재검증합니다."
+
     elif last_role == "edit":
         if not state.get("post_edit_compliance_done", False):
             next_step = "compliance"
@@ -192,8 +227,8 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
             situation = "최종 검증 완료. 워크플로우를 종료합니다."
 
     else:
-        next_step = "generation"
-        situation = "초기 상태. 약관 생성을 시작합니다."
+        next_step = "compliance" if is_revise_mode else "generation"
+        situation = "초기 상태. 검증을 시작합니다." if is_revise_mode else "초기 상태. 약관 생성을 시작합니다."
 
     # ── MANUAL_REVIEW_REQUIRED 상태 갱신 ─────────────────────────────────────
     updated_status = status
@@ -219,8 +254,6 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         SystemMessage(content=_prompt("supervisor")),
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
-    extra: dict = {}
-
     try:
         response = await llm.ainvoke(llm_messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[supervisor] %s → next=%s", situation, next_step)
@@ -465,6 +498,26 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         }
 
 
+def _build_fix_prompt(draft: str, violations: list) -> str:
+    """위반 항목 부분 수정 프롬프트 — edit_node, revise_node 공용."""
+    fix_items = []
+    for i, v in enumerate(violations, 1):
+        fix_items.append(
+            f"[수정 {i}]\n"
+            f"- 위반 유형: {v.get('type', '')}\n"
+            f"- 원문: \"{v.get('original_text', '')}\"\n"
+            f"- 근거 법령: {v.get('regulation', '')}\n"
+            f"- 수정 사유: {v.get('reason', '')}"
+        )
+    return (
+        f"다음 약관에서 지정된 위반 항목만 최소한으로 수정하세요. "
+        f"다른 내용은 절대 변경하지 마세요.\n\n"
+        f"=== 약관 전문 ===\n{draft}\n\n"
+        f"=== 수정 대상 ({len(violations)}건) ===\n"
+        + "\n\n".join(fix_items)
+    )
+
+
 async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
     """위반 항목만 부분 수정 + 상품설명서·사업방법서 동시 생성"""
     llm        = get_edit_llm(model_override)
@@ -475,23 +528,7 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
     try:
         # ── Step 1: 약관 위반 항목 부분 수정 ──────────────────────────────────
         if violations:
-            fix_items = []
-            for i, v in enumerate(violations, 1):
-                fix_items.append(
-                    f"[수정 {i}]\n"
-                    f"- 위반 유형: {v.get('type', '')}\n"
-                    f"- 원문: \"{v.get('original_text', '')}\"\n"
-                    f"- 근거 법령: {v.get('regulation', '')}\n"
-                    f"- 수정 사유: {v.get('reason', '')}"
-                )
-
-            edit_prompt = (
-                f"다음 약관에서 지정된 위반 항목만 최소한으로 수정하세요. "
-                f"다른 내용은 절대 변경하지 마세요.\n\n"
-                f"=== 약관 전문 ===\n{draft}\n\n"
-                f"=== 수정 대상 ({len(violations)}건) ===\n"
-                + "\n\n".join(fix_items)
-            )
+            edit_prompt   = _build_fix_prompt(draft, violations)
             response      = await llm.ainvoke(
                 [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
                 config={"callbacks": state.get("langfuse_callbacks", [])},
@@ -542,8 +579,53 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         }
 
 
+async def revise_node(state: State, model_override: Optional[str] = None) -> dict:
+    """검증-수정 반복 전용 노드 (사용자 작성 약관 모드).
+
+    edit_node와 달리 위반 항목만 수정하고 상품설명서·사업방법서는 생성하지 않은 채
+    재검증을 위해 supervisor → compliance로 되돌아간다.
+    """
+    llm        = get_edit_llm(model_override)
+    violations = state.get("violations", [])
+    draft      = state["draft_content"]
+    iteration  = state.get("iteration", 0)
+
+    if not violations:
+        return {
+            "draft_content": draft,
+            "iteration": iteration + 1,
+            "messages": state["messages"] + [
+                {"role": "revise", "content": "수정 대상 없음"}
+            ],
+        }
+
+    try:
+        edit_prompt = _build_fix_prompt(draft, violations)
+        response = await llm.ainvoke(
+            [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
+            config={"callbacks": state.get("langfuse_callbacks", [])},
+        )
+        logger.info("[revise] 수정 완료 violations=%d", len(violations))
+        return {
+            "draft_content": response.content,
+            "iteration": iteration + 1,
+            "messages": state["messages"] + [
+                {"role": "revise", "content": f"수정 완료 ({len(violations)}건)"}
+            ],
+        }
+    except Exception as e:
+        logger.error("[revise] 실패: %s", e)
+        return {
+            "draft_content": draft,
+            "iteration": iteration + 1,
+            "messages": state.get("messages", []) + [
+                {"role": "revise", "content": f"수정 오류: {e}"}
+            ],
+        }
+
+
 # ── 라우터 ────────────────────────────────────────────────────────────────────
 
-def route_supervisor(state: State) -> Literal["generation", "compliance", "edit", "end"]:
+def route_supervisor(state: State) -> Literal["generation", "compliance", "edit", "revise", "end"]:
     """supervisor가 state["next_step"]에 설정한 값을 그대로 반환"""
     return state.get("next_step", "generation")

@@ -49,6 +49,11 @@ class GenerateRequest(BaseModel):
     product_design_conditions: dict
     coverage_conditions:       dict
     applicant_info:            dict = Field(default_factory=dict)
+    user_document:              Optional[str] = Field(
+        default=None,
+        description="사용자가 직접 작성한 약관 전문. 값이 있으면 생성 단계를 건너뛰고 "
+                     "검증→수정만 반복한 뒤 최종 약관을 출력한다.",
+    )
     session_id:                str = Field(default="", description="세션 ID (빈 값이면 서버에서 자동 생성)")
     model:                     Optional[str] = Field(default=None, description="OpenRouter 모델 ID")
 
@@ -133,7 +138,7 @@ async def generate_clause(body: GenerateRequest):
 
     # 기본 유효성: 기본보장종목 필수
     basic_items = payload.get("coverage_conditions", {}).get("basic_coverage_items", [])
-    if not basic_items:
+    if not basic_items and not payload.get("user_document"):
         raise HTTPException(
             status_code=400,
             detail="coverage_conditions.basic_coverage_items 에 하나 이상의 항목이 필요합니다.",
@@ -162,7 +167,7 @@ async def generate_clause_stream(body: GenerateRequest):
         payload["session_id"] = str(uuid.uuid4())
 
     basic_items = payload.get("coverage_conditions", {}).get("basic_coverage_items", [])
-    if not basic_items:
+    if not basic_items and not payload.get("user_document"):
         raise HTTPException(
             status_code=400,
             detail="coverage_conditions.basic_coverage_items 에 하나 이상의 항목이 필요합니다.",
