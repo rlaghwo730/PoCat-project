@@ -131,6 +131,8 @@ class TestOverstatementDetector:
         data = make_input("입원 치료비를 전액보장합니다. 단, 자기부담금 10,000원이 적용됩니다.")
         violations = detector.detect(data)
         assert len(violations) >= 1
+        assert violations[0].violation_id == "VIO_OVR_LLM_FAIL"
+        assert violations[0].manual_flag is True
 
     def test_caveat_없으면_llm_미호출(self, mocker):
         """과장 표현이 있어도 caveat이 없으면 LLM을 호출하지 않는다."""

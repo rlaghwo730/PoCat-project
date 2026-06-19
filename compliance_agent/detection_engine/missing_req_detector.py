@@ -9,8 +9,7 @@ DB팀 API 미제공 시 mock 데이터로 대체한다.
 """
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
 
@@ -100,7 +99,7 @@ MOCK_REQUIRED_ITEMS: list[_RequiredItem] = [
 ]
 
 
-_VALID_SECTION_TYPES: frozenset[str] = frozenset({"약관", "상품설명서"})
+_VALID_SECTION_TYPES: frozenset[str] = frozenset({"약관", "상품설명서", "사업방법서"})
 
 
 def _fetch_required_items(section_type: str) -> list[_RequiredItem]:
@@ -111,7 +110,12 @@ def _fetch_required_items(section_type: str) -> list[_RequiredItem]:
     try:
         from compliance_agent.external_apis.db_client import DBClient
         items = DBClient().search(query="필수 기재사항", section_type=section_type)
-        return items if items else [
+        mandatory_items = [
+            item for item in items
+            if getattr(item, "is_mandatory", False)
+            and section_type in getattr(item, "section_types", [])
+        ]
+        return mandatory_items if mandatory_items else [
             item for item in MOCK_REQUIRED_ITEMS if section_type in item.section_types
         ]
     except Exception:
@@ -220,7 +224,8 @@ class MissingReqDetector:
         return violations
 
     def _is_present(self, content: str, keywords: list[str]) -> bool:
-        return any(re.search(kw, content) for kw in keywords)
+        normalized = content.casefold()
+        return any(kw.casefold() in normalized for kw in keywords if kw)
 
     def _build_violation(self, item: _RequiredItem) -> Violation:
         return Violation(

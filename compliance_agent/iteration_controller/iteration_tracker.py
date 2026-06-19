@@ -54,6 +54,13 @@ class IterationTracker:
         return len(self.consecutive_violation_ids()) > 0
 
     def has_hard_loop(self) -> bool:
-        """직전 대비 위반 수 감소가 없으면(delta >= 0) True → GENERATOR_FAILURE 대상."""
-        delta = self.violation_delta()
-        return delta is not None and delta >= 0
+        """직전 위반이 하나도 해결되지 않은 채 모두 남아 있으면 True.
+
+        단순 건수 비교는 기존 위반이 해결되고 다른 위반이 발견된 경우까지
+        HARD_LOOP로 오판하므로 violation_id 집합을 비교한다.
+        """
+        if len(self._history) < 2:
+            return False
+        previous_ids = {v.violation_id for v in self._history[-2]}
+        current_ids = {v.violation_id for v in self._history[-1]}
+        return bool(previous_ids) and previous_ids.issubset(current_ids)

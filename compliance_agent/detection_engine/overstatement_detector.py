@@ -152,13 +152,18 @@ class OverstatementDetector:
     def detect(self, data: DetectionInput) -> list[Violation]:
         violations: list[Violation] = []
         content = data.content
+        llm_failures = 0
 
         for idx, (pattern, label) in enumerate(_OVERSTATEMENT_PATTERNS, start=1):
             for seq, match in enumerate(pattern.finditer(content), start=1):
                 if _has_caveat(content, match.start(), match.end()):
                     # 2단계: LLM으로 caveat 실효성 검증 (false positive 방지)
                     window = _get_caveat_window(content, match.start(), match.end())
-                    if self._is_real_caveat_by_llm(window, label):
+                    caveat_result = self._is_real_caveat_by_llm(window, label)
+                    if caveat_result is None:
+                        llm_failures += 1
+                        continue
+                    if caveat_result:
                         continue  # LLM이 진짜 caveat 확인 → 통과
 
                 # 원문 스니펫: 매칭 전후 40자
@@ -180,11 +185,24 @@ class OverstatementDetector:
                     )
                 )
 
+        if llm_failures:
+            violations.append(Violation(
+                violation_id="VIO_OVR_LLM_FAIL",
+                type=ViolationType.OVERSTATEMENT,
+                severity=Severity.LOW,
+                original_text="",
+                regulation="보험업 감독업무 시행세칙 제5-18조",
+                reason=(
+                    f"과장 표현 제한조건 검사 중 LLM 호출이 {llm_failures}회 실패했습니다. "
+                    "실패한 후보는 자동 판정하지 않았으며 수동 검토가 필요합니다."
+                ),
+                manual_flag=True,
+            ))
         return violations
 
-    def _is_real_caveat_by_llm(self, window: str, label: str) -> bool:
+    def _is_real_caveat_by_llm(self, window: str, label: str) -> bool | None:
         """LLM에게 caveat이 실제로 보장 범위를 제한하는지 판단시킨다.
-        오류 시 False 반환 → 위반으로 처리 (CLAUDE.md: 불확실하면 위반)."""
+        오류 시 None을 반환해 규정 위반과 운영 장애를 구분한다."""
         try:
             prompt = _CAVEAT_LLM_USER.format(window=window, label=label)
             message = self.client.messages.create(
@@ -197,4 +215,4 @@ class OverstatementDetector:
             result = _parse_llm_json(message.content[0].text)
             return bool(result.get("is_real_caveat", False))
         except Exception:
-            return False  # 불확실하면 위반으로 처리
+            return None

@@ -834,7 +834,14 @@ def build_revise_request(model=None) -> dict:
 def best_result(results: list) -> dict:
     passed = [r for r in results if r.get("status") == "COMPLIANCE_PASSED"]
     pool = passed if passed else results
-    return min(pool, key=lambda r: (r.get("iteration", 99), len(r.get("violations_for_ui", []))))
+    return max(
+        pool,
+        key=lambda r: (
+            r.get("compliance_score_pct", 0.0),
+            -r.get("iteration", 99),
+            -len(r.get("violations_for_ui", [])),
+        ),
+    )
 
 
 async def _post_one(session: aiohttp.ClientSession, model_id: str) -> dict:
@@ -921,6 +928,7 @@ def _to_docx_bytes(title: str, content: str) -> bytes:
 def render_result_panel(result: dict, model_label: str, show_all_docs: bool = True):
     final_status = result.get("status", "")
     action_word = "생성" if show_all_docs else "수정"
+    score_pct = float(result.get("compliance_score_pct", 0.0))
     if final_status == "COMPLIANCE_PASSED":
         st.success(
             f"✅ 법규 검토 통과 — {result.get('iteration', '?')}회 완료 "
@@ -941,6 +949,16 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
 
     if result.get("db_warning"):      st.warning(f"⚠️ {result['db_warning']}")
     if result.get("improvement_note"):st.info(f"📊 {result['improvement_note']}")
+
+    st.metric("종합 법규 준수율", f"{score_pct:.1f}%")
+    document_scores = result.get("document_compliance_scores", {})
+    if show_all_docs and document_scores:
+        score_columns = st.columns(len(document_scores))
+        for column, details in zip(score_columns, document_scores.values()):
+            column.metric(
+                details.get("section_type", "문서"),
+                f"{float(details.get('compliance_score_pct', 0.0)):.1f}%",
+            )
 
     product_name = st.session_state.get("product_name", "보험상품")
     company      = st.session_state.get("insurance_company", "")

@@ -47,8 +47,10 @@ def _build_suggestions(violations: list) -> list:
 
 def _check_db_warning() -> Optional[str]:
     """DB 연결 불가 시 경고 메시지 반환"""
-    if not os.getenv("DB_API_URL"):
-        return "DB_API_URL 미설정 — MOCK 모드: 법률 DB 조회 없이 실행됩니다."
+    from compliance_agent.external_apis.db_client import MOCK_MODE
+
+    if MOCK_MODE:
+        return "법률 RAG 저장소 미연결 — MOCK 필수기재사항 기준으로 검증됩니다."
     return None
 
 
@@ -105,6 +107,10 @@ def _build_result(result: dict, db_warning: Optional[str]) -> dict:
         "status":              api_status,
         "content":             final_content,
         "iteration":           iteration,
+        "compliance_score":    float(result.get("compliance_score", 0.0)),
+        "compliance_score_pct": float(result.get("compliance_score_pct", 0.0)),
+        "document_compliance_scores": result.get("document_compliance_scores", {}),
+        "compliance_next_action": result.get("compliance_next_action", ""),
         "violations_for_ui":   _violations_to_ui(violations),
         "suggestions":         _build_suggestions(violations) if api_status != "COMPLIANCE_PASSED" else [],
         "product_description": product_description,
@@ -131,9 +137,14 @@ def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> 
         "final_content":       "",
         "product_description": "",
         "business_method":     "",
-        "status":              "",   # supervisor가 첫 판단 전까지 빈 문자열
-        "next_step":           "",
-        "langfuse_callbacks":  langfuse_callbacks or [],
+        "status":                    "",   # supervisor가 첫 판단 전까지 빈 문자열
+        "next_step":                 "",
+        "langfuse_callbacks":        langfuse_callbacks or [],
+        "post_edit_compliance_done": False,
+        "compliance_next_action":   "",
+        "compliance_score":         0.0,
+        "compliance_score_pct":     0.0,
+        "document_compliance_scores": {},
     }
 
 
@@ -147,6 +158,7 @@ async def run_workflow(request: dict) -> dict:
         status              - COMPLIANCE_PASSED | MANUAL_REVIEW_REQUIRED | ORCHESTRATOR_ERROR
         content             - 최종 약관 전문
         iteration           - 완료된 반복 횟수
+        compliance_score_pct - 규칙 기반 종합 법규 준수율 (0~100)
         violations_for_ui   - 하이라이트용 위반 목록
         suggestions         - 수동 검토 항목 목록
         product_description - 상품설명서 (edit_node 생성)
@@ -198,6 +210,10 @@ async def run_workflow(request: dict) -> dict:
             "status":              "ORCHESTRATOR_ERROR",
             "content":             "",
             "iteration":           0,
+            "compliance_score":    0.0,
+            "compliance_score_pct": 0.0,
+            "document_compliance_scores": {},
+            "compliance_next_action": "ERROR",
             "violations_for_ui":   [],
             "suggestions":         [],
             "product_description": "",
@@ -264,6 +280,7 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
                         "node":      last_msg.get("role", ""),
                         "status":    snapshot.get("status"),
                         "iteration": snapshot.get("iteration", 0),
+                        "compliance_score_pct": snapshot.get("compliance_score_pct", 0.0),
                         "message":   last_msg.get("content", ""),
                     }
                     yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"

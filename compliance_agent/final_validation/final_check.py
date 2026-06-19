@@ -16,6 +16,7 @@ class FinalCheck:
             status="COMPLIANCE_PASSED",
             iteration=iteration,
             violations=[],
+            compliance_score=confidence_score,
             final_validation=FinalValidation(
                 passed=True,
                 confidence_score=confidence_score,
