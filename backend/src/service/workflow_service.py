@@ -117,11 +117,15 @@ def _build_result(result: dict, db_warning: Optional[str]) -> dict:
 # ── 공통 초기 State ───────────────────────────────────────────────────────────
 
 def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> State:
-    """워크플로우 시작 시 초기 State 생성."""
+    """워크플로우 시작 시 초기 State 생성.
+
+    request.user_document가 있으면 generation 단계를 건너뛰므로
+    draft_content를 사용자 작성 약관으로 미리 채워 둔다.
+    """
     return {
         "messages":            [],
         "request":             request,
-        "draft_content":       "",
+        "draft_content":       request.get("user_document") or "",
         "violations":          [],
         "iteration":           0,
         "final_content":       "",
