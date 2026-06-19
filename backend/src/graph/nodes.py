@@ -20,6 +20,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .types import State
 from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor_llm, get_edit_llm
+# ── A2A 보조 레이어 ───────────────────────────────────────────────────────────
+# 기존 라우팅(builder.py의 edge)은 그대로 두고, 노드 간 전달 내용을
+# 표준 A2A 메시지로 기록하기 위한 helper. 실행 흐름에는 영향을 주지 않는다.
+from ..a2a import create_a2a_message, append_a2a_message, A2AStatus
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +86,18 @@ async def coordinator_node(state: State, model_override: Optional[str] = None) -
     try:
         response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[coordinator] %s", response.content[:80])
+        # ── A2A: coordinator → planner (요청 검증 완료를 planner에 전달) ──────
+        a2a_msg = create_a2a_message(
+            sender="coordinator", receiver="planner",
+            task="작업 계획 수립 요청",
+            status=A2AStatus.REQUEST_VALIDATED,
+            payload={"summary": "사용자 요청 분석 및 유효성 검증 완료"},
+        )
         return {
             "messages": state.get("messages", []) + [
                 {"role": "coordinator", "content": response.content}
-            ]
+            ],
+            "a2a_messages": append_a2a_message(state, a2a_msg),
         }
     except Exception as e:
         logger.error("[coordinator] 실패: %s", e)
@@ -106,10 +118,18 @@ async def planner_node(state: State, model_override: Optional[str] = None) -> di
     try:
         response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
         logger.info("[planner] %s", response.content[:80])
+        # ── A2A: planner → supervisor (수립한 계획을 허브에 전달) ─────────────
+        a2a_msg = create_a2a_message(
+            sender="planner", receiver="supervisor",
+            task="작업 계획 전달 및 라우팅 요청",
+            status=A2AStatus.PLAN_READY,
+            payload={"summary": "약관 생성 작업 전략 수립 완료"},
+        )
         return {
             "messages": state["messages"] + [
                 {"role": "planner", "content": response.content}
-            ]
+            ],
+            "a2a_messages": append_a2a_message(state, a2a_msg),
         }
     except Exception as e:
         logger.error("[planner] 실패: %s", e)
@@ -209,10 +229,23 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         logger.error("[supervisor] LLM 실패: %s", e)
         supervisor_comment = f"[→{next_step.upper()}] supervisor 오류: {e}"
 
+    # ── A2A: supervisor → (next_step) 분기 결정을 메시지로 기록 ──────────────
+    # supervisor는 허브라 receiver가 매번 달라진다. next_step을 그대로 receiver로 쓴다.
+    a2a_receiver = "END" if next_step == "end" else next_step
+    a2a_status = A2AStatus.WORKFLOW_END if next_step == "end" else A2AStatus.ROUTING
+    a2a_msg = create_a2a_message(
+        sender="supervisor", receiver=a2a_receiver,
+        task=situation,
+        status=a2a_status,
+        payload={"next_step": next_step, "decided_status": updated_status},
+        metadata={"iteration": iteration, "violations_count": len(violations)},
+    )
+
     return {
         "next_step":  next_step,
         "status":     updated_status,
         "messages":   msgs + [{"role": "supervisor", "content": supervisor_comment}],
+        "a2a_messages": append_a2a_message(state, a2a_msg),
         **extra,
     }
 
@@ -240,12 +273,21 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
 
         new_iter = iteration + 1
         logger.info("[generation] iteration=%d model=%s 완료", new_iter, model_override or "default")
+        # ── A2A: generation → compliance (생성한 초안 검토 요청) ─────────────
+        a2a_msg = create_a2a_message(
+            sender="generation", receiver="compliance",
+            task="약관 초안 검토 요청",
+            status=A2AStatus.DRAFT_GENERATED,
+            payload={"summary": "약관 초안 생성 완료"},
+            metadata={"iteration": new_iter},
+        )
         return {
             "draft_content": result.get("content", ""),
             "iteration": new_iter,
             "messages": state["messages"] + [
                 {"role": "generation", "content": f"초안 생성 완료 (iteration {new_iter}, model={model_override or 'default'})"}
             ],
+            "a2a_messages": append_a2a_message(state, a2a_msg),
         }
     except Exception as e:
         logger.error("[generation] 실패: %s", e)
@@ -375,6 +417,18 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
         is_post_edit = bool(state.get("final_content") or state.get("product_description"))
+        # ── A2A: compliance → supervisor (검증 결과 보고, 다음 분기는 supervisor가 결정) ──
+        a2a_msg = create_a2a_message(
+            sender="compliance", receiver="supervisor",
+            task="법규 검증 결과 보고",
+            status=(A2AStatus.COMPLIANCE_PASSED if status == "PASS"
+                    else A2AStatus.COMPLIANCE_FAILED),
+            payload={
+                "summary": f"검증 {status} / 위반 {len(violations)}건",
+                "compliance_next_action": compliance_next_action,
+            },
+            metadata={"iteration": state["iteration"], "violations_count": len(violations)},
+        )
         return {
             "violations":               violations,
             "status":                   status,
@@ -392,6 +446,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                     ),
                 }
             ],
+            "a2a_messages":             append_a2a_message(state, a2a_msg),
         }
 
     except Exception as e:
@@ -452,6 +507,14 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         )
 
         logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
+        # ── A2A: edit → supervisor (3종 문서 완성 보고, 최종 검증/종료는 supervisor가 결정) ──
+        a2a_msg = create_a2a_message(
+            sender="edit", receiver="supervisor",
+            task="편집 및 3종 문서 생성 완료 보고",
+            status=A2AStatus.EDIT_DONE,
+            payload={"summary": f"약관 부분 수정({len(violations)}건) + 상품설명서·사업방법서 생성 완료"},
+            metadata={"iteration": state.get("iteration", 0)},
+        )
         return {
             "final_content":       final_content,
             "product_description": generated_docs["product_description"],
@@ -465,6 +528,7 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                     ),
                 }
             ],
+            "a2a_messages": append_a2a_message(state, a2a_msg),
         }
     except Exception as e:
         logger.error("[edit] 실패: %s", e)
