@@ -127,6 +127,7 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
     iteration = state.get("iteration", 0)
     status = state.get("status", "")
     violations = state.get("violations", [])
+    compliance_next_action = state.get("compliance_next_action", "")
 
     # ── 규칙 기반 라우팅 결정 ──────────────────────────────────────────────────
     if last_role == "planner":
@@ -139,9 +140,19 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
 
     elif last_role == "compliance":
         if state.get("post_edit_compliance_done", False):
-            # 3종 문서 최종 검증 완료 → 결과와 관계없이 END
+            # 최종 검증 후 종료하되 실패는 수동 검토 상태로 보존한다.
             next_step = "end"
-            situation = "최종 검증 완료. 워크플로우를 종료합니다."
+            situation = (
+                "최종 검증 통과. 워크플로우를 종료합니다."
+                if status == "PASS"
+                else "최종 검증에서 위반이 남아 수동 검토 상태로 종료합니다."
+            )
+        elif compliance_next_action.startswith("GENERATOR_FAILURE"):
+            next_step = "end"
+            situation = "생성 결과가 수렴하지 않아 수동 검토 상태로 종료합니다."
+        elif compliance_next_action == "MANUAL_REVIEW_REQUIRED":
+            next_step = "end"
+            situation = "최대 검증 횟수에 도달해 수동 검토 상태로 종료합니다."
         elif status == "PASS":
             next_step = "edit"
             situation = "법규 준수 확인. edit 노드에서 3종 문서를 생성합니다."
@@ -166,7 +177,12 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
 
     # ── MANUAL_REVIEW_REQUIRED 상태 갱신 ─────────────────────────────────────
     updated_status = status
-    if last_role == "compliance" and status == "FAIL" and iteration >= 3:
+    if last_role == "compliance" and status == "FAIL" and (
+        iteration >= 3
+        or state.get("post_edit_compliance_done", False)
+        or compliance_next_action.startswith("GENERATOR_FAILURE")
+        or compliance_next_action == "MANUAL_REVIEW_REQUIRED"
+    ):
         updated_status = "MANUAL_REVIEW_REQUIRED"
 
     # ── LLM 평가 코멘트 생성 ──────────────────────────────────────────────────
@@ -251,40 +267,66 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     doc_req  = state["request"].get("document_request", {})
     session_id = state["request"].get("session_id", "langgraph-default")
 
-    # edit 후라면 3종 문서 모두 검증, 아니면 약관 초안만 검증
-    content_parts = []
+    # 문서를 합치면 한 문서의 키워드가 다른 문서의 필수항목 누락을 가리므로
+    # section_type별로 독립 검증한다.
+    documents = []
     if state.get("final_content"):
-        content_parts.append("=== 약관 ===\n" + state["final_content"])
+        documents.append(("terms", "약관", state["final_content"]))
     elif state.get("draft_content"):
-        content_parts.append("=== 약관 ===\n" + state["draft_content"])
+        documents.append(("terms", "약관", state["draft_content"]))
     if state.get("product_description"):
-        content_parts.append("=== 상품설명서 ===\n" + state["product_description"])
+        documents.append(
+            ("product_description", "상품설명서", state["product_description"])
+        )
     if state.get("business_method"):
-        content_parts.append("=== 사업방법서 ===\n" + state["business_method"])
-    content = "\n\n".join(content_parts) if content_parts else state.get("draft_content", "")
+        documents.append(("business_method", "사업방법서", state["business_method"]))
 
-    detection_input = DetectionInput(
-        iteration=state["iteration"],
-        section_type="약관",
-        content=content,
-        session_id=session_id,
-        product_meta={"product_name": doc_req.get("product_name", "")},
-        coverage_context=CoverageContext(
-            coverage_limit=coverage.get("coverage_limit"),
-            deductible_required=bool(coverage.get("deductible_rule")),
-            three_major_noncovered_required=bool(
-                coverage.get("three_major_noncovered_items")
-            ),
-            exclusions=coverage.get("noncovered_rider_items", []),
+    terms_coverage_context = CoverageContext(
+        coverage_limit=coverage.get("coverage_limit"),
+        deductible_required=bool(coverage.get("deductible_rule")),
+        three_major_noncovered_required=bool(
+            coverage.get("three_major_noncovered_items")
         ),
+        exclusions=coverage.get("noncovered_rider_items", []),
     )
+    product_coverage_context = CoverageContext(
+        coverage_limit=coverage.get("coverage_limit"),
+        deductible_required=bool(coverage.get("deductible_rule")),
+        three_major_noncovered_required=bool(
+            coverage.get("three_major_noncovered_items")
+        ),
+        exclusions=coverage.get("noncovered_rider_items", []),
+    )
+    coverage_by_section = {
+        "약관": terms_coverage_context,
+        "상품설명서": product_coverage_context,
+        # 사업방법서에는 약관 필수기재 규칙을 적용하지 않는다.
+        "사업방법서": None,
+    }
+    detection_inputs = [
+        (
+            document_key,
+            DetectionInput(
+                iteration=state["iteration"],
+                section_type=section_type,
+                content=document_content,
+                session_id=f"{session_id}:{document_key}",
+                product_meta={"product_name": doc_req.get("product_name", "")},
+                coverage_context=coverage_by_section[section_type],
+            ),
+        )
+        for document_key, section_type, document_content in documents
+    ]
 
     try:
-        report = await asyncio.to_thread(agent.validate, detection_input)
+        reports = await asyncio.gather(
+            *(agent.validate_async(item) for _, item in detection_inputs)
+        )
 
         violations = [
             {
-                "violation_id": v.violation_id,
+                "violation_id": f"{document_key}:{v.violation_id}",
+                "document_type": document_key,
                 "type":         str(v.type.value) if hasattr(v.type, "value") else str(v.type),
                 "severity":     str(v.severity.value) if hasattr(v.severity, "value") else str(v.severity),
                 "original_text": v.original_text,
@@ -292,18 +334,63 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                 "reason":       v.reason,
                 "manual_flag":  v.manual_flag,
             }
+            for (document_key, _), report in zip(detection_inputs, reports)
             for v in report.violations
         ]
-        status = "PASS" if report.status == "COMPLIANCE_PASSED" else "FAIL"
+        status = (
+            "PASS"
+            if reports and all(r.status == "COMPLIANCE_PASSED" for r in reports)
+            else "FAIL"
+        )
+        document_scores = {
+            document_key: {
+                "section_type": item.section_type,
+                "status": report.status,
+                "compliance_score": round(report.compliance_score, 4),
+                "compliance_score_pct": round(report.compliance_score * 100, 1),
+            }
+            for (document_key, item), report in zip(detection_inputs, reports)
+        }
+        total_length = sum(len(item.content) for _, item in detection_inputs)
+        if total_length:
+            compliance_score = sum(
+                report.compliance_score * len(item.content)
+                for (_, item), report in zip(detection_inputs, reports)
+            ) / total_length
+        else:
+            compliance_score = 0.0
+
+        next_actions = [report.next_action for report in reports if report.next_action]
+        if any(a.startswith("GENERATOR_FAILURE") for a in next_actions):
+            compliance_next_action = "GENERATOR_FAILURE"
+        elif "MANUAL_REVIEW_REQUIRED" in next_actions:
+            compliance_next_action = "MANUAL_REVIEW_REQUIRED"
+        elif status == "FAIL":
+            compliance_next_action = "REGENERATE"
+        elif "THRESHOLD_PASSED" in next_actions:
+            compliance_next_action = "THRESHOLD_PASSED"
+        else:
+            compliance_next_action = "READY_FOR_DELIVERY"
+
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
         is_post_edit = bool(state.get("final_content") or state.get("product_description"))
         return {
             "violations":               violations,
             "status":                   status,
+            "compliance_next_action":   compliance_next_action,
+            "compliance_score":         round(compliance_score, 4),
+            "compliance_score_pct":     round(compliance_score * 100, 1),
+            "document_compliance_scores": document_scores,
             "post_edit_compliance_done": is_post_edit,
             "messages":                 state["messages"] + [
-                {"role": "compliance", "content": f"검증 완료: {status} (위반 {len(violations)}건)"}
+                {
+                    "role": "compliance",
+                    "content": (
+                        f"검증 완료: {status} / 준수율 {compliance_score * 100:.1f}% "
+                        f"(위반 {len(violations)}건)"
+                    ),
+                }
             ],
         }
 
@@ -312,6 +399,10 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         return {
             "violations":               [],
             "status":                   "ERROR",
+            "compliance_next_action":   "ERROR",
+            "compliance_score":         0.0,
+            "compliance_score_pct":     0.0,
+            "document_compliance_scores": {},
             "post_edit_compliance_done": False,
             "messages":                 state["messages"] + [
                 {"role": "compliance", "content": f"검증 오류 발생: {e}"}

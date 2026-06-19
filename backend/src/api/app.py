@@ -68,10 +68,21 @@ class Suggestion(BaseModel):
     requires_manual_review: bool
 
 
+class DocumentComplianceScore(BaseModel):
+    section_type:         str
+    status:               str
+    compliance_score:     float = Field(ge=0.0, le=1.0)
+    compliance_score_pct: float = Field(ge=0.0, le=100.0)
+
+
 class GenerateResponse(BaseModel):
     status:              str  # COMPLIANCE_PASSED | MANUAL_REVIEW_REQUIRED | ORCHESTRATOR_ERROR
     content:             str
     iteration:           int
+    compliance_score:    float = Field(ge=0.0, le=1.0)
+    compliance_score_pct: float = Field(ge=0.0, le=100.0)
+    document_compliance_scores: dict[str, DocumentComplianceScore]
+    compliance_next_action: str
     violations_for_ui:   list[ViolationUI]
     suggestions:         list[Suggestion]
     product_description: str

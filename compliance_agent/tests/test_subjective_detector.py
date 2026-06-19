@@ -62,6 +62,8 @@ class TestSubjectiveDetector:
         data = make_input("합리적인 범위 내에서 지급합니다.")
         violations = detector.detect(data)
         assert len(violations) >= 1
+        assert violations[0].violation_id == "VIO_SUB_LLM_FAIL"
+        assert violations[0].manual_flag is True
 
     def test_violation_id_형식(self, mocker):
         _mock_llm(mocker, is_subjective=True)

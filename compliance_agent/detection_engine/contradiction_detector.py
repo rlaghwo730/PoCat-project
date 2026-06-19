@@ -111,6 +111,7 @@ class ContradictionDetector:
                     f"조항 간 모순 검사 중 LLM 호출이 {llm_failures}회 실패하였습니다. "
                     "해당 조항 쌍에 대한 수동 검토가 권장됩니다."
                 ),
+                manual_flag=True,
             ))
 
         # coverage_context 기반 추가 모순 탐지

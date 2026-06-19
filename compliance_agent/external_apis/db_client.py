@@ -96,6 +96,10 @@ class LegalChunkItem:
     chunk_text: str = ""
     chunk_type: str = ""
     score: float = 0.0
+    # 검색 관련성만으로 필수 기재사항이라고 단정하지 않는다. 파이프라인이
+    # 명시적으로 mandatory metadata를 제공한 청크만 Rule 5에 사용한다.
+    is_mandatory: bool = False
+    requirement_type: str = ""
 
 
 # ── 환경 감지 ─────────────────────────────────────────────────────────────────
@@ -254,6 +258,11 @@ def _chroma_to_item(
     document_title   = str(meta.get("document_title", "") or "")
     chunk_type       = str(meta.get("chunk_type", "") or "")
     vector_collection = str(meta.get("vector_collection", "") or "")
+    requirement_type = str(meta.get("requirement_type", "") or "")
+    mandatory_raw = meta.get("mandatory", False)
+    is_mandatory = mandatory_raw is True or str(mandatory_raw).lower() in {
+        "true", "y", "yes", "1"
+    }
 
     name = " ".join(filter(None, [document_title, article_no, article_title])) or registry_id
 
@@ -269,6 +278,8 @@ def _chroma_to_item(
         chunk_text=document,
         chunk_type=chunk_type,
         score=max(0.0, 1.0 - distance),
+        is_mandatory=is_mandatory,
+        requirement_type=requirement_type,
     )
 
 

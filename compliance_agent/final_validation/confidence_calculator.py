@@ -10,7 +10,7 @@ Rule별 가중치: CRITICAL Rule일수록 점수 영향이 크다.
 """
 from __future__ import annotations
 
-from compliance_agent.models import Violation, ViolationType
+from compliance_agent.models import Severity, Violation, ViolationType
 
 # 가중치 근거: 각 Rule의 규제 위반 심각도 기준
 # - CONTRADICTION 0.30: 조항 간 모순은 계약 해석 분쟁으로 직결 (민법 §105 신의성실 원칙)
@@ -35,6 +35,15 @@ _RULE_WEIGHTS: dict[ViolationType, float] = {
     # 합계 = 1.00
 }
 
+# 같은 유형의 위반이 여러 건이면 각각 패널티를 부과한다. 심각도에 따라
+# 기본 Rule 가중치를 조정해 CRITICAL/HIGH가 점수에 더 크게 반영되도록 한다.
+_SEVERITY_FACTORS: dict[Severity, float] = {
+    Severity.CRITICAL: 1.0,
+    Severity.HIGH: 0.75,
+    Severity.MEDIUM: 0.5,
+    Severity.LOW: 0.25,
+}
+
 _MOCK_MODE_CONFIDENCE_CAP = 0.85
 
 # (최소 글자 수 미만이면 적용할 상한) — 오름차순 정렬 필수
@@ -56,13 +65,15 @@ def calculate(
 
     failed_types = {v.type for v in violations}
     checks: dict[str, str] = {}
-    penalty = 0.0
+    penalty = sum(
+        _RULE_WEIGHTS[v.type] * _SEVERITY_FACTORS[v.severity]
+        for v in violations
+    )
 
-    for vtype, weight in _RULE_WEIGHTS.items():
+    for vtype in _RULE_WEIGHTS:
         key = vtype.value.lower()
         if vtype in failed_types:
             checks[key] = "FAIL"
-            penalty += weight
         else:
             checks[key] = "PASS"
 

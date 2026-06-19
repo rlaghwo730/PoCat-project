@@ -97,6 +97,12 @@ class TestIterationTracker:
         tracker.record([_make_violation("VIO_001")])
         assert tracker.has_hard_loop() is False
 
+    def test_has_hard_loop_건수같아도_위반교체시_False(self):
+        tracker = IterationTracker()
+        tracker.record([_make_violation("VIO_OLD")])
+        tracker.record([_make_violation("VIO_NEW")])
+        assert tracker.has_hard_loop() is False
+
     # ── consecutive_violation_ids / has_soft_loop ──────────────────────────────
     def test_consecutive_3회_연속_탐지(self):
         tracker = IterationTracker()
@@ -168,6 +174,15 @@ class TestTerminationLogic:
         # (tracker history 반영 후 evaluate 호출을 재현: 두 번째 record 없이 평가)
         tracker.record([v])
         assert self.logic.evaluate([v], tracker, current_iteration=1) == TerminationReason.CONTINUE
+
+    def test_HIGH_위반은_점수80이상이어도_threshold통과금지(self):
+        tracker = IterationTracker()
+        v = _make_violation("VIO_HIGH", ViolationType.MISSING_REQUIREMENT)
+        tracker.record([v])
+        assert (
+            self.logic.evaluate([v], tracker, current_iteration=1, compliance_score=0.95)
+            == TerminationReason.CONTINUE
+        )
 
 
 class TestFeedbackBuilder:

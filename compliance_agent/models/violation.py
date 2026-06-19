@@ -23,6 +23,7 @@ class Severity(str, Enum):
 class SectionType(str, Enum):
     TERMS = "약관"
     PRODUCT_DESCRIPTION = "상품설명서"
+    BUSINESS_METHOD = "사업방법서"
 
 
 @dataclass

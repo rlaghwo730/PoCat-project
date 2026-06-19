@@ -102,10 +102,28 @@ class SubjectiveDetector:
     def detect(self, data: DetectionInput) -> list[Violation]:
         candidates = self._extract_candidates(data.content)
         violations: list[Violation] = []
+        llm_failures = 0
 
         for candidate in candidates:
-            if self._is_subjective_by_llm(candidate):
+            result = self._is_subjective_by_llm(candidate)
+            if result is None:
+                llm_failures += 1
+            elif result:
                 violations.append(self._build_violation(candidate))
+
+        if llm_failures:
+            violations.append(Violation(
+                violation_id="VIO_SUB_LLM_FAIL",
+                type=ViolationType.SUBJECTIVE,
+                severity=Severity.LOW,
+                original_text="",
+                regulation="보험업 감독업무 시행세칙 제5-17조",
+                reason=(
+                    f"주관적 표현 검사 중 LLM 호출이 {llm_failures}회 실패했습니다. "
+                    "실패한 후보는 자동 판정하지 않았으며 수동 검토가 필요합니다."
+                ),
+                manual_flag=True,
+            ))
 
         return violations
 
@@ -135,8 +153,8 @@ class SubjectiveDetector:
                 )
         return candidates
 
-    def _is_subjective_by_llm(self, candidate: _Candidate) -> bool:
-        """LLM에게 모호성 여부를 판단시킨다. 오류 시 보수적으로 True 반환."""
+    def _is_subjective_by_llm(self, candidate: _Candidate) -> bool | None:
+        """LLM 판단 결과를 반환한다. None은 호출·파싱 실패를 뜻한다."""
         try:
             prompt = _LLM_USER_TEMPLATE.format(
                 context=candidate.context,
@@ -153,8 +171,7 @@ class SubjectiveDetector:
             result = _parse_llm_json(text)
             return bool(result.get("is_subjective", True))
         except Exception:
-            # 불확실하면 위반으로 표기 (CLAUDE.md 원칙)
-            return True
+            return None
 
     def _build_violation(self, candidate: _Candidate) -> Violation:
         return Violation(

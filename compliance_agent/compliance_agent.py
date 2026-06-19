@@ -40,6 +40,17 @@ class ComplianceAgent:
         self._trackers: dict[str, IterationTracker] = {}
 
     def validate(self, input_data: DetectionInput) -> ComplianceReport:
+        """동기 호출용 API. 비동기 코드에서는 ``validate_async``를 사용한다."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.validate_async(input_data))
+        raise RuntimeError(
+            "실행 중인 event loop에서는 await ComplianceAgent.validate_async(...)를 사용하세요."
+        )
+
+    async def validate_async(self, input_data: DetectionInput) -> ComplianceReport:
+        """이벤트 루프를 중첩 생성하지 않는 비동기 검증 API."""
         session_key = input_data.session_id or "__default__"
         tracker = self._trackers.setdefault(session_key, IterationTracker())
 
@@ -55,7 +66,13 @@ class ComplianceAgent:
             )
 
         content_length = len(input_data.content)
-        detection_result = asyncio.run(self._detector.detect(input_data))
+        try:
+            detection_result = await self._detector.detect(input_data)
+        except Exception:
+            # 탐지 중단 세션은 이후 반복에 사용할 수 없으며, 고유 session_id가
+            # 계속 유입될 때 tracker가 누적되지 않도록 즉시 정리한다.
+            self._trackers.pop(session_key, None)
+            raise
         tracker.record(detection_result.violations)
 
         # SOFT_LOOP: 3회 연속 등장한 violation을 사전에 MANUAL_FLAG 처리 (루프는 계속)
@@ -81,9 +98,11 @@ class ComplianceAgent:
 
         if reason == TerminationReason.PASS:
             logger.info("COMPLIANCE_PASSED at iteration %d", input_data.iteration)
-            return self._final_check.build_passed_report(
+            report = self._final_check.build_passed_report(
                 detection_result.violations, input_data.iteration, content_length
             )
+            self._trackers.pop(session_key, None)
+            return report
 
         if reason == TerminationReason.PASS_THRESHOLD:
             logger.info(
@@ -92,7 +111,7 @@ class ComplianceAgent:
                 ACCURACY_THRESHOLD * 100,
                 input_data.iteration,
             )
-            return ComplianceReport(
+            report = ComplianceReport(
                 status="COMPLIANCE_PASSED",
                 iteration=input_data.iteration,
                 violations=detection_result.violations,
@@ -104,6 +123,8 @@ class ComplianceAgent:
                 ),
                 next_action="THRESHOLD_PASSED",
             )
+            self._trackers.pop(session_key, None)
+            return report
 
         report = self._feedback_builder.build(
             detection_result.violations, input_data.iteration, content_length
@@ -115,8 +136,11 @@ class ComplianceAgent:
 
         elif reason == TerminationReason.HARD_LOOP:
             logger.warning(
-                "HARD_LOOP detected - no improvement in violation count (delta >= 0)"
+                "HARD_LOOP detected - all previous violation IDs remain"
             )
             report.next_action = "GENERATOR_FAILURE - no improvement detected"
+
+        if reason in {TerminationReason.FAIL_MAX, TerminationReason.HARD_LOOP}:
+            self._trackers.pop(session_key, None)
 
         return report

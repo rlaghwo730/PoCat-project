@@ -2,6 +2,7 @@
 ComplianceAgent 통합 테스트.
 LLM 의존 탐지기(Rule 2, 3)는 monkeypatch로 빈 리스트를 반환하도록 대체한다.
 """
+import asyncio
 import pytest
 from compliance_agent.compliance_agent import ComplianceAgent
 from .conftest import make_input
@@ -88,3 +89,32 @@ class TestComplianceAgent:
         report = agent.validate(make_input(CLEAN_CONTENT))
         score = report.final_validation.confidence_score
         assert 0.0 <= score <= 1.0
+
+    def test_async_api를_event_loop에서_호출가능(self):
+        agent = ComplianceAgent()
+
+        async def run():
+            return await agent.validate_async(make_input(CLEAN_CONTENT))
+
+        report = asyncio.run(run())
+        assert report.status == "COMPLIANCE_PASSED"
+
+    def test_종료된_session_tracker는_정리(self):
+        agent = ComplianceAgent()
+        data = make_input(CLEAN_CONTENT)
+        data.session_id = "completed-session"
+        agent.validate(data)
+        assert "completed-session" not in agent._trackers
+
+    def test_탐지예외가발생해도_session_tracker는_정리(self, monkeypatch):
+        agent = ComplianceAgent()
+        data = make_input(CLEAN_CONTENT)
+        data.session_id = "failed-session"
+
+        async def fail(_input):
+            raise RuntimeError("detector failure")
+
+        monkeypatch.setattr(agent._detector, "detect", fail)
+        with pytest.raises(RuntimeError, match="detector failure"):
+            asyncio.run(agent.validate_async(data))
+        assert "failed-session" not in agent._trackers

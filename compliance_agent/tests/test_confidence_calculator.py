@@ -47,6 +47,23 @@ class TestConfidenceCalculator:
         assert checks["overstatement"] == "FAIL"
         assert checks["contradiction"] == "PASS"
 
+    def test_동일유형_위반도_건수만큼_penalty_적용(self):
+        from compliance_agent.models import Severity, Violation
+        violations = [
+            Violation(
+                violation_id=f"VIO_MRQ_{i}",
+                type=ViolationType.MISSING_REQUIREMENT,
+                severity=Severity.HIGH,
+                original_text="",
+                regulation="시행세칙",
+                reason="필수사항 누락",
+            )
+            for i in range(3)
+        ]
+        one_score, _ = calculate(violations[:1], content_length=600)
+        three_score, _ = calculate(violations, content_length=600)
+        assert three_score < one_score
+
     def test_checks_dict_모든_rule_포함(self):
         _, checks = calculate([], content_length=600)
         expected_keys = {"overstatement", "subjective", "contradiction", "forbidden_word", "missing_requirement"}

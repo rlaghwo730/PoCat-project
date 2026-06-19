@@ -14,3 +14,7 @@ class State(TypedDict):
     next_step: str             # supervisor가 설정하는 다음 노드: generation/compliance/edit/end
     langfuse_callbacks: list          # Langfuse CallbackHandler 리스트
     post_edit_compliance_done: bool   # edit 후 compliance 완료 여부
+    compliance_next_action: str       # ComplianceAgent가 결정한 후속 조치
+    compliance_score: float           # 종합 준수율 (0.0~1.0)
+    compliance_score_pct: float       # 종합 준수율 백분율 (0.0~100.0)
+    document_compliance_scores: dict  # 문서별 준수율과 상태
