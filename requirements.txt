@@ -35,3 +35,6 @@ langfuse==4.7.1
 
 # DB
 psycopg2-binary==2.9.12
+ragas
+datasets
+pandas

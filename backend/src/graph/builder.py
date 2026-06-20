@@ -25,6 +25,7 @@ from .nodes import (
     generation_node,
     compliance_node,
     edit_node,
+    final_validation_node,
     revise_node,
     route_supervisor,
 )
@@ -42,13 +43,14 @@ def build_graph(model_override: Optional[str] = None):
     async def _edit(s):        return await edit_node(s, model_override)
     async def _revise(s):      return await revise_node(s, model_override)
 
-    graph.add_node("coordinator", _coordinator)
-    graph.add_node("planner",     _planner)
-    graph.add_node("supervisor",  _supervisor)
-    graph.add_node("generation",  _generation)
-    graph.add_node("compliance",  _compliance)
-    graph.add_node("edit",        _edit)
-    graph.add_node("revise",      _revise)
+    graph.add_node("coordinator",      _coordinator)
+    graph.add_node("planner",          _planner)
+    graph.add_node("supervisor",       _supervisor)
+    graph.add_node("generation",       _generation)
+    graph.add_node("compliance",       _compliance)
+    graph.add_node("edit",             _edit)
+    graph.add_node("final_validation", lambda s: final_validation_node(s, model_override))
+    graph.add_node("revise",           _revise)
 
     # 진입점 → coordinator → planner → supervisor(허브)
     graph.set_entry_point("coordinator")
@@ -60,19 +62,21 @@ def build_graph(model_override: Optional[str] = None):
         "supervisor",
         route_supervisor,
         {
-            "generation": "generation",
-            "compliance": "compliance",
-            "edit":       "edit",
-            "revise":     "revise",
-            "end":        END,
+            "generation":       "generation",
+            "compliance":       "compliance",
+            "edit":             "edit",
+            "final_validation": "final_validation",
+            "revise":           "revise",
+            "end":              END,
         },
     )
 
     # 각 노드 완료 후 supervisor로 귀환
-    graph.add_edge("generation", "supervisor")
-    graph.add_edge("compliance", "supervisor")
-    graph.add_edge("edit",       "supervisor")
-    graph.add_edge("revise",     "supervisor")
+    graph.add_edge("generation",       "supervisor")
+    graph.add_edge("compliance",       "supervisor")
+    graph.add_edge("edit",             "final_validation")
+    graph.add_edge("final_validation", "supervisor")
+    graph.add_edge("revise",           "supervisor")
 
     return graph.compile()
 

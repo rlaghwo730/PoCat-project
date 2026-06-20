@@ -90,7 +90,10 @@ async def coordinator_node(state: State, model_override: Optional[str] = None) -
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
     try:
-        response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
+        response = await asyncio.wait_for(
+            llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])}),
+            timeout=60.0,
+        )
         logger.info("[coordinator] %s", response.content[:80])
         # ── A2A: coordinator → planner (요청 검증 완료를 planner에 전달) ──────
         a2a_msg = create_a2a_message(
@@ -122,7 +125,10 @@ async def planner_node(state: State, model_override: Optional[str] = None) -> di
         HumanMessage(content=json.dumps(state["request"], ensure_ascii=False)),
     ]
     try:
-        response = await llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])})
+        response = await asyncio.wait_for(
+            llm.ainvoke(messages, config={"callbacks": state.get("langfuse_callbacks", [])}),
+            timeout=60.0,
+        )
         logger.info("[planner] %s", response.content[:80])
         # ── A2A: planner → supervisor (수립한 계획을 허브에 전달) ─────────────
         a2a_msg = create_a2a_message(
@@ -221,10 +227,14 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
     elif last_role == "edit":
         if not state.get("post_edit_compliance_done", False):
             next_step = "compliance"
-            situation = "편집 완료. 3종 문서(약관+상품설명서+사업방법서) 최종 검증을 실행합니다."
+            situation = "편집 완료. 3종 문서 최종 검증을 실행합니다."
         else:
-            next_step = "end"
-            situation = "최종 검증 완료. 워크플로우를 종료합니다."
+            next_step = "final_validation"
+            situation = "최종 compliance 완료. 최종 산출물 검증을 실행합니다."
+
+    elif last_role == "final_validation":
+        next_step = "end"
+        situation = "최종 검증 완료. 워크플로우를 종료합니다."
 
     else:
         next_step = "compliance" if is_revise_mode else "generation"
@@ -255,7 +265,10 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         HumanMessage(content=json.dumps(ctx, ensure_ascii=False)),
     ]
     try:
-        response = await llm.ainvoke(llm_messages, config={"callbacks": state.get("langfuse_callbacks", [])})
+        response = await asyncio.wait_for(
+            llm.ainvoke(llm_messages, config={"callbacks": state.get("langfuse_callbacks", [])}),
+            timeout=60.0,
+        )
         logger.info("[supervisor] %s → next=%s", situation, next_step)
         supervisor_comment = f"[→{next_step.upper()}] {response.content}"
     except Exception as e:
@@ -531,9 +544,12 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         # ── Step 1: 약관 위반 항목 부분 수정 ──────────────────────────────────
         if violations:
             edit_prompt   = _build_fix_prompt(draft, violations)
-            response      = await llm.ainvoke(
-                [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
-                config={"callbacks": state.get("langfuse_callbacks", [])},
+            response = await asyncio.wait_for(
+                llm.ainvoke(
+                    [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
+                    config={"callbacks": state.get("langfuse_callbacks", [])},
+                ),
+                timeout=60.0,
             )
             final_content = response.content
         else:
@@ -577,6 +593,48 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
             "business_method":     "",
             "messages": state.get("messages", []) + [
                 {"role": "edit", "content": f"편집 오류: {e}"}
+            ],
+        }
+
+
+async def final_validation_node(state: State, model_override: Optional[str] = None) -> dict:
+    """최종 산출물 검증 — final_validation_agent 재활용"""
+    try:
+        from ..agents.final_validation_agent import arun_final_validation
+        llm = get_supervisor_llm(model_override)
+
+        result = await arun_final_validation(
+            {
+                "final_content":       state.get("final_content", ""),
+                "product_description": state.get("product_description", ""),
+                "business_method":     state.get("business_method", ""),
+                "violations":          state.get("violations", []),
+                "request":             state.get("request", {}),
+            },
+            llm=llm,
+        )
+
+        passed   = result.get("passed", True)
+        summary  = result.get("summary", "최종 검증 완료")
+        issues   = result.get("issues", [])
+
+        logger.info("[final_validation] passed=%s issues=%d", passed, len(issues))
+
+        return {
+            "status":   "PASS" if passed else "MANUAL_REVIEW_REQUIRED",
+            "messages": state.get("messages", []) + [
+                {
+                    "role":    "final_validation",
+                    "content": f"최종 검증: {'통과' if passed else '이슈 발견'} — {summary}",
+                }
+            ],
+        }
+    except Exception as e:
+        logger.error("[final_validation] 실패: %s", e)
+        return {
+            "status":   "MANUAL_REVIEW_REQUIRED",
+            "messages": state.get("messages", []) + [
+                {"role": "final_validation", "content": f"최종 검증 오류: {e}"}
             ],
         }
 
@@ -628,6 +686,6 @@ async def revise_node(state: State, model_override: Optional[str] = None) -> dic
 
 # ── 라우터 ────────────────────────────────────────────────────────────────────
 
-def route_supervisor(state: State) -> Literal["generation", "compliance", "edit", "revise", "end"]:
+def route_supervisor(state: State) -> Literal["generation", "compliance", "edit", "revise", "final_validation", "end"]:
     """supervisor가 state["next_step"]에 설정한 값을 그대로 반환"""
     return state.get("next_step", "generation")
