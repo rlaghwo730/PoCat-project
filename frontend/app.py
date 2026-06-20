@@ -10,14 +10,12 @@
   결과   : 약관 / 상품설명서 / 사업방법서 3탭 항상 표시
 """
 
-import asyncio
 import io
 import json
 import os
 import re
 from uuid import uuid4
 
-import aiohttp
 import requests
 import sseclient
 from dotenv import load_dotenv
@@ -32,13 +30,6 @@ import streamlit as st
 
 MAX_ITERATIONS = 3
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-
-MODELS = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "openai/gpt-oss-120b:free",
-    "openai/gpt-oss-20b:free",
-    "z-ai/glm-4.5-air:free",
-]
 
 STEPS_GENERATE = [
     "기본 설정",
@@ -828,43 +819,6 @@ def build_revise_request(model=None) -> dict:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 병렬 실행
-# ────────────────────────────────────────────────────────────────────────────
-
-def best_result(results: list) -> dict:
-    passed = [r for r in results if r.get("status") == "COMPLIANCE_PASSED"]
-    pool = passed if passed else results
-    return max(
-        pool,
-        key=lambda r: (
-            r.get("compliance_score_pct", 0.0),
-            -r.get("iteration", 99),
-            -len(r.get("violations_for_ui", [])),
-        ),
-    )
-
-
-async def _post_one(session: aiohttp.ClientSession, model_id: str) -> dict:
-    payload = build_request(model=model_id)
-    payload["session_id"] = str(uuid4())
-    try:
-        async with session.post(
-            f"{BACKEND_URL}/generate", json=payload,
-            timeout=aiohttp.ClientTimeout(total=300),
-        ) as r:
-            data = await r.json()
-            data["model_used"] = model_id
-            return data
-    except Exception as e:
-        return {"status": "ORCHESTRATOR_ERROR", "error": str(e), "model_used": model_id}
-
-
-async def _run_parallel() -> list:
-    async with aiohttp.ClientSession() as session:
-        return list(await asyncio.gather(*[_post_one(session, m) for m in MODELS]))
-
-
-# ────────────────────────────────────────────────────────────────────────────
 # 위반 하이라이트
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -950,14 +904,28 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
     if result.get("db_warning"):      st.warning(f"⚠️ {result['db_warning']}")
     if result.get("improvement_note"):st.info(f"📊 {result['improvement_note']}")
 
-    st.metric("종합 법규 준수율", f"{score_pct:.1f}%")
-    document_scores = result.get("document_compliance_scores", {})
-    if show_all_docs and document_scores:
-        score_columns = st.columns(len(document_scores))
-        for column, details in zip(score_columns, document_scores.values()):
-            column.metric(
-                details.get("section_type", "문서"),
-                f"{float(details.get('compliance_score_pct', 0.0)):.1f}%",
+    accuracy_history = result.get("accuracy_history", [])
+    if accuracy_history:
+        st.markdown("---")
+        st.subheader("📈 법규 준수율 개선 추이")
+        for h in accuracy_history:
+            iteration = h.get("iteration", 0)
+            accuracy = h.get("accuracy", 0)
+            violations = h.get("violations", 0)
+            status = h.get("status", "")
+            bar_filled = int(accuracy / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            if accuracy >= 80:
+                emoji = "🟢"
+            elif accuracy >= 60:
+                emoji = "🟡"
+            else:
+                emoji = "🔴"
+            is_post = h.get("is_post_edit", False)
+            label = "edit 후 최종" if is_post else f"iteration {iteration}"
+            st.markdown(
+                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
+                f"(위반 {violations}건, {status})"
             )
 
     product_name = st.session_state.get("product_name", "보험상품")
@@ -976,6 +944,23 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 file_name=f"{company}_{product_name}_약관.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
+        accuracy_history = result.get("accuracy_history", [])
+        if accuracy_history:
+            st.markdown("---")
+            st.subheader("📈 법규 준수율 개선 추이")
+            for h in accuracy_history:
+                iteration  = h.get("iteration", 0)
+                accuracy   = h.get("accuracy", 0)
+                violations = h.get("violations", 0)
+                h_status   = h.get("status", "")
+                bar_filled = int(accuracy / 10)
+                bar = "█" * bar_filled + "░" * (10 - bar_filled)
+                emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+                label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+                st.markdown(
+                    f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
+                    f"(위반 {violations}건, {h_status})"
+                )
         return
 
     # 항상 3탭 고정 (AI 생성 모드)
@@ -1013,6 +998,24 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 data=_to_docx_bytes(f"{company} {product_name} 사업방법서", biz),
                 file_name=f"{company}_{product_name}_사업방법서.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+    accuracy_history = result.get("accuracy_history", [])
+    if accuracy_history:
+        st.markdown("---")
+        st.subheader("📈 법규 준수율 개선 추이")
+        for h in accuracy_history:
+            iteration  = h.get("iteration", 0)
+            accuracy   = h.get("accuracy", 0)
+            violations = h.get("violations", 0)
+            h_status   = h.get("status", "")
+            bar_filled = int(accuracy / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+            label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+            st.markdown(
+                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
+                f"(위반 {violations}건, {h_status})"
             )
 
 
@@ -1090,14 +1093,14 @@ with col_form:
             can_gen = bool(st.session_state.get("basic_coverage_items", []))
 
             generate_btn = st.button(
-                "⚡ 초안 생성 (Upstage)",
+                "⚡ 기능 확인 (Upstage)",
                 type="primary", use_container_width=True, disabled=not can_gen,
-                help="Upstage Solar 단일 모델로 빠르게 생성",
+                help="Upstage Solar-Pro로 빠르게 기능 확인",
             )
             run_all_btn = st.button(
-                "🔄 4개 모델 병렬 실행 (OpenRouter)",
+                "🚀 최종 실행",
                 use_container_width=True, disabled=not can_gen,
-                help="OpenRouter 무료 모델 4개 병렬 실행",
+                help="에이전트별 최적 모델 자동 선택",
             )
             if not can_gen:
                 st.warning("⚠️ STEP 3에서 기본 보장 종목을 선택하세요.")
@@ -1131,8 +1134,18 @@ with col_result:
                             data = json.loads(event.data)
                             if data.get("type") == "progress":
                                 node = data.get("node", "")
-                                if node:
-                                    st.write(f"{NODE_EMOJI.get(node,'⚙️')} **{node}** 완료 (iter {data.get('iteration',0)})")
+                                accuracy = data.get("accuracy")
+                                if node == "compliance" and accuracy is not None:
+                                    color = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+                                    st.write(f"⚖️ **compliance** 완료 → {color} 준수율: **{accuracy}%**")
+                                else:
+                                    node_emoji = {
+                                        "coordinator": "🔍", "planner": "📋", "supervisor": "🎯",
+                                        "generation": "✍️", "edit": "✏️", "final_validation": "🔎",
+                                        "revise": "🔧",
+                                    }.get(node, "⚙️")
+                                    if node:
+                                        st.write(f"{node_emoji} **{node}** 완료")
                             elif data.get("type") == "result":
                                 result = data
                             elif data.get("type") == "error":
@@ -1156,8 +1169,18 @@ with col_result:
                             data = json.loads(event.data)
                             if data.get("type") == "progress":
                                 node = data.get("node", "")
-                                if node:
-                                    st.write(f"{NODE_EMOJI.get(node,'⚙️')} **{node}** 완료 (iter {data.get('iteration',0)})")
+                                accuracy = data.get("accuracy")
+                                if node == "compliance" and accuracy is not None:
+                                    color = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+                                    st.write(f"⚖️ **compliance** 완료 → {color} 준수율: **{accuracy}%**")
+                                else:
+                                    node_emoji = {
+                                        "coordinator": "🔍", "planner": "📋", "supervisor": "🎯",
+                                        "generation": "✍️", "edit": "✏️", "final_validation": "🔎",
+                                        "revise": "🔧",
+                                    }.get(node, "⚙️")
+                                    if node:
+                                        st.write(f"{node_emoji} **{node}** 완료")
                             elif data.get("type") == "result":
                                 result = data
                             elif data.get("type") == "error":
@@ -1167,12 +1190,40 @@ with col_result:
                         model_used = result.get("model_used", "Upstage Solar")
                         st.write(f"✅ 생성 완료: {model_used}")
                 else:
-                    with st.status("4개 모델 병렬 실행 중...", expanded=True) as status_box:
-                        st.write("OpenRouter 무료 모델 4개 동시 요청...")
-                        all_results = asyncio.run(_run_parallel())
-                        result      = best_result(all_results)
-                        model_used  = result.get("model_used", "unknown")
-                        st.write(f"✅ 최적 결과 선택: {model_used}")
+                    with st.status("최종 실행 중...", expanded=True) as status_box:
+                        request = build_request(model=None)
+                        response = requests.post(
+                            f"{BACKEND_URL}/generate/stream",
+                            json=request, stream=True, timeout=300,
+                        )
+                        response.raise_for_status()
+                        result = None
+                        for event in sseclient.SSEClient(response).events():
+                            if event.data == "[DONE]":
+                                break
+                            data = json.loads(event.data)
+                            if data.get("type") == "progress":
+                                node = data.get("node", "")
+                                accuracy = data.get("accuracy")
+                                if node == "compliance" and accuracy is not None:
+                                    color = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+                                    st.write(f"⚖️ **compliance** 완료 → {color} 준수율: **{accuracy}%**")
+                                else:
+                                    node_emoji = {
+                                        "coordinator": "🔍", "planner": "📋", "supervisor": "🎯",
+                                        "generation": "✍️", "edit": "✏️", "final_validation": "🔎",
+                                        "revise": "🔧",
+                                    }.get(node, "⚙️")
+                                    if node:
+                                        st.write(f"{node_emoji} **{node}** 완료")
+                            elif data.get("type") == "result":
+                                result = data
+                            elif data.get("type") == "error":
+                                raise Exception(data.get("message", "스트리밍 오류"))
+                        if result is None:
+                            raise Exception("결과를 받지 못했습니다.")
+                        model_used = result.get("model_used", "에이전트별 최적 모델")
+                        st.write(f"✅ 최종 실행 완료: {model_used}")
 
                 final_status = result.get("status", "")
                 action_word = "검토" if revise_btn else "재생성"

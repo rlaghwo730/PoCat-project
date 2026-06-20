@@ -117,6 +117,8 @@ def _build_result(result: dict, db_warning: Optional[str]) -> dict:
         "business_method":     business_method,
         "improvement_note":    _build_improvement_note(messages, iteration, api_status),
         "db_warning":          db_warning,
+        "accuracy_history":    result.get("accuracy_history", []),
+        "current_accuracy":    float(result.get("current_accuracy", 0.0)),
     }
 
 
@@ -145,6 +147,8 @@ def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> 
         "compliance_score":         0.0,
         "compliance_score_pct":     0.0,
         "document_compliance_scores": {},
+        "current_accuracy":         0.0,
+        "accuracy_history":         [],
     }
 
 
@@ -282,14 +286,20 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
                     final_state = snapshot
                     msgs = snapshot.get("messages", [])
                     last_msg = msgs[-1] if msgs else {}
+                    last_node = last_msg.get("role", "")
                     progress = {
                         "type":      "progress",
-                        "node":      last_msg.get("role", ""),
+                        "node":      last_node,
                         "status":    snapshot.get("status"),
                         "iteration": snapshot.get("iteration", 0),
                         "compliance_score_pct": snapshot.get("compliance_score_pct", 0.0),
                         "message":   last_msg.get("content", ""),
                     }
+                    if last_node == "compliance":
+                        accuracy = snapshot.get("current_accuracy", 0.0)
+                        progress["accuracy"] = accuracy
+                        progress["history"]  = snapshot.get("accuracy_history", [])
+                        progress["message"]  = f"준수율: {accuracy}%"
                     yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
 
         langfuse.flush()

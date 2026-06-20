@@ -18,6 +18,8 @@ class State(TypedDict):
     compliance_score: float           # 종합 준수율 (0.0~1.0)
     compliance_score_pct: float       # 종합 준수율 백분율 (0.0~100.0)
     document_compliance_scores: dict  # 문서별 준수율과 상태
+    current_accuracy: float           # 현재 compliance 준수율 (룰 기반)
+    accuracy_history: list            # iteration별 준수율 히스토리
 
     # ── A2A(Agent-to-Agent) 보조 레이어 ──────────────────────────────────────
     # 노드 간 전달 내용을 표준 메시지로 누적 기록하는 로그성 필드.

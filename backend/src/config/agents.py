@@ -1,8 +1,8 @@
 AGENT_LLM_MAP = {
     "coordinator": "basic",
     "planner":     "basic",
-    "supervisor":  "supervisor",
-    "generation":  "basic",
-    "compliance":  "basic",
+    "supervisor":  "basic",
+    "generation":  "generation",
+    "compliance":  "compliance",
     "edit":        "basic",
 }

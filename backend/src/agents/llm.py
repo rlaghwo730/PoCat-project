@@ -8,9 +8,11 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _MODEL_MAP = {
-    "basic":      "openai/gpt-oss-120b:free",
-    "reasoning":  "openai/gpt-oss-120b:free",
-    "supervisor": "openai/gpt-oss-120b:free",
+    "basic":       "openai/gpt-oss-20b:free",
+    "reasoning":   "openai/gpt-oss-20b:free",
+    "supervisor":  "openai/gpt-oss-20b:free",
+    "generation":  "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "compliance":  "nousresearch/hermes-3-llama-3.1-405b:free",
 }
 
 

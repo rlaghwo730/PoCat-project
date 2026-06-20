@@ -54,13 +54,17 @@ class IterationTracker:
         return len(self.consecutive_violation_ids()) > 0
 
     def has_hard_loop(self) -> bool:
-        """직전 위반이 하나도 해결되지 않은 채 모두 남아 있으면 True.
-
-        단순 건수 비교는 기존 위반이 해결되고 다른 위반이 발견된 경우까지
-        HARD_LOOP로 오판하므로 violation_id 집합을 비교한다.
+        """
+        직전 위반이 하나도 해결되지 않고 위반 수까지 늘어났을 때만 True.
+        (위반 수가 줄어들면 개선 중이므로 HARD_LOOP 아님)
         """
         if len(self._history) < 2:
             return False
         previous_ids = {v.violation_id for v in self._history[-2]}
-        current_ids = {v.violation_id for v in self._history[-1]}
-        return bool(previous_ids) and previous_ids.issubset(current_ids)
+        current_ids  = {v.violation_id for v in self._history[-1]}
+
+        # 직전 위반이 모두 잔존하고 위반 수도 늘어났을 때만 HARD_LOOP
+        no_improvement = previous_ids.issubset(current_ids)
+        got_worse = len(current_ids) >= len(previous_ids)
+
+        return bool(previous_ids) and no_improvement and got_worse

@@ -464,6 +464,19 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
 
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
+        # compliance_agent의 실제 준수율 사용
+        accuracy = round(getattr(report, 'compliance_score', 0.0) * 100, 1)
+        if accuracy == 0.0 and not violations:
+            accuracy = 100.0
+
+        history = state.get("accuracy_history", [])
+        history = history + [{
+            "iteration":  state.get("iteration", 0),
+            "accuracy":   accuracy,
+            "violations": len(violations),
+            "status":     status,
+        }]
+
         is_post_edit = bool(state.get("final_content") or state.get("product_description"))
         # ── A2A: compliance → supervisor (검증 결과 보고, 다음 분기는 supervisor가 결정) ──
         a2a_msg = create_a2a_message(
@@ -484,6 +497,8 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             "compliance_score":         round(compliance_score, 4),
             "compliance_score_pct":     round(compliance_score * 100, 1),
             "document_compliance_scores": document_scores,
+            "current_accuracy":         accuracy,
+            "accuracy_history":         history,
             "post_edit_compliance_done": is_post_edit,
             "messages":                 state["messages"] + [
                 {
@@ -506,6 +521,8 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             "compliance_score":         0.0,
             "compliance_score_pct":     0.0,
             "document_compliance_scores": {},
+            "current_accuracy":         0.0,
+            "accuracy_history":         state.get("accuracy_history", []),
             "post_edit_compliance_done": False,
             "messages":                 state["messages"] + [
                 {"role": "compliance", "content": f"검증 오류 발생: {e}"}
