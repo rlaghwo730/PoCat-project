@@ -58,6 +58,7 @@ class DetectionInput:
     session_id: str = ""  # 동일 세션의 iteration을 추적하는 키
     product_meta: dict[str, Any] = field(default_factory=dict)
     coverage_context: Optional[CoverageContext] = None
+    model_override: Optional[str] = None  # Generation Agent와 동일한 사용자 선택 모델
 
 
 @dataclass

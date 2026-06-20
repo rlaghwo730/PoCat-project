@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import re
 
-import anthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
+from compliance_agent.providers import get_compliance_llm
 from .subjective_detector import _parse_llm_json
 
 
@@ -139,15 +140,16 @@ def _has_caveat(content: str, match_start: int, match_end: int) -> bool:
 class OverstatementDetector:
     """Rule 1: 과장·절대적 보장 표현 탐지 (Regex + 2단계 LLM caveat 검증)"""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        self._client: anthropic.Anthropic | None = None
-        self._model = model
+    def __init__(self, llm_factory=None) -> None:
+        self._llm_factory = llm_factory
+        self._llm_cache: dict[str, object] = {}
 
-    @property
-    def client(self) -> anthropic.Anthropic:
-        if self._client is None:
-            self._client = anthropic.Anthropic()
-        return self._client
+    def _get_llm(self, model_override: str | None):
+        key = model_override or "__upstage_fallback__"
+        if key not in self._llm_cache:
+            factory = self._llm_factory or get_compliance_llm
+            self._llm_cache[key] = factory(model_override)
+        return self._llm_cache[key]
 
     def detect(self, data: DetectionInput) -> list[Violation]:
         violations: list[Violation] = []
@@ -159,7 +161,9 @@ class OverstatementDetector:
                 if _has_caveat(content, match.start(), match.end()):
                     # 2단계: LLM으로 caveat 실효성 검증 (false positive 방지)
                     window = _get_caveat_window(content, match.start(), match.end())
-                    caveat_result = self._is_real_caveat_by_llm(window, label)
+                    caveat_result = self._is_real_caveat_by_llm(
+                        window, label, data.model_override
+                    )
                     if caveat_result is None:
                         llm_failures += 1
                         continue
@@ -200,19 +204,18 @@ class OverstatementDetector:
             ))
         return violations
 
-    def _is_real_caveat_by_llm(self, window: str, label: str) -> bool | None:
+    def _is_real_caveat_by_llm(
+        self, window: str, label: str, model_override: str | None
+    ) -> bool | None:
         """LLM에게 caveat이 실제로 보장 범위를 제한하는지 판단시킨다.
         오류 시 None을 반환해 규정 위반과 운영 장애를 구분한다."""
         try:
             prompt = _CAVEAT_LLM_USER.format(window=window, label=label)
-            message = self.client.messages.create(
-                model=self._model,
-                max_tokens=128,
-                temperature=0.1,
-                system=_CAVEAT_LLM_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            result = _parse_llm_json(message.content[0].text)
+            message = self._get_llm(model_override).invoke([
+                SystemMessage(content=_CAVEAT_LLM_SYSTEM),
+                HumanMessage(content=prompt),
+            ])
+            result = _parse_llm_json(str(message.content))
             return bool(result.get("is_real_caveat", False))
         except Exception:
             return None

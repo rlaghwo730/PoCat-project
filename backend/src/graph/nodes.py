@@ -388,6 +388,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                 session_id=f"{session_id}:{document_key}",
                 product_meta={"product_name": doc_req.get("product_name", "")},
                 coverage_context=coverage_by_section[section_type],
+                model_override=model_override,
             ),
         )
         for document_key, section_type, document_content in documents

@@ -15,6 +15,5 @@ psycopg2-binary==2.9.12
 requests==2.34.2
 httpx==0.28.1
 langfuse==4.7.1
-anthropic==0.104.1
 aiohttp>=3.9.0
 sqlalchemy>=2.0.0

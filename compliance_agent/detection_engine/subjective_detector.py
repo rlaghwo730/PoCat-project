@@ -12,9 +12,10 @@ import json
 import re
 from dataclasses import dataclass
 
-import anthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
+from compliance_agent.providers import get_compliance_llm
 
 # LLM이 ```json ... ``` 으로 감싸서 응답하는 경우를 처리
 _MD_JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -88,16 +89,16 @@ class _Candidate:
 class SubjectiveDetector:
     """Rule 2: 주관적·모호한 표현 탐지 (Pattern + LLM)"""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        # 클라이언트는 첫 호출 시점에 생성 (API 키 없는 환경에서도 인스턴스 생성 가능)
-        self._client: anthropic.Anthropic | None = None
-        self._model = model
+    def __init__(self, llm_factory=None) -> None:
+        self._llm_factory = llm_factory
+        self._llm_cache: dict[str, object] = {}
 
-    @property
-    def client(self) -> anthropic.Anthropic:
-        if self._client is None:
-            self._client = anthropic.Anthropic()
-        return self._client
+    def _get_llm(self, model_override: str | None):
+        key = model_override or "__upstage_fallback__"
+        if key not in self._llm_cache:
+            factory = self._llm_factory or get_compliance_llm
+            self._llm_cache[key] = factory(model_override)
+        return self._llm_cache[key]
 
     def detect(self, data: DetectionInput) -> list[Violation]:
         candidates = self._extract_candidates(data.content)
@@ -105,7 +106,7 @@ class SubjectiveDetector:
         llm_failures = 0
 
         for candidate in candidates:
-            result = self._is_subjective_by_llm(candidate)
+            result = self._is_subjective_by_llm(candidate, data.model_override)
             if result is None:
                 llm_failures += 1
             elif result:
@@ -153,21 +154,20 @@ class SubjectiveDetector:
                 )
         return candidates
 
-    def _is_subjective_by_llm(self, candidate: _Candidate) -> bool | None:
+    def _is_subjective_by_llm(
+        self, candidate: _Candidate, model_override: str | None
+    ) -> bool | None:
         """LLM 판단 결과를 반환한다. None은 호출·파싱 실패를 뜻한다."""
         try:
             prompt = _LLM_USER_TEMPLATE.format(
                 context=candidate.context,
                 expression=candidate.pattern_label,
             )
-            message = self.client.messages.create(
-                model=self._model,
-                max_tokens=256,
-                temperature=0.1,
-                system=_LLM_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = message.content[0].text
+            message = self._get_llm(model_override).invoke([
+                SystemMessage(content=_LLM_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ])
+            text = str(message.content)
             result = _parse_llm_json(text)
             return bool(result.get("is_subjective", True))
         except Exception:

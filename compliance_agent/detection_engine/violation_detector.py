@@ -8,14 +8,34 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 
-from compliance_agent.models import DetectionInput, DetectionResult, Violation
+from compliance_agent.models import (
+    DetectionInput,
+    DetectionResult,
+    Severity,
+    Violation,
+    ViolationType,
+)
 
 from .contradiction_detector import ContradictionDetector
 from .forbidden_word_detector import ForbiddenWordDetector
 from .missing_req_detector import MissingReqDetector
 from .overstatement_detector import OverstatementDetector
 from .subjective_detector import SubjectiveDetector
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_DETECTOR_TIMEOUT_SECONDS = 60.0
+
+_DETECTOR_META = (
+    ("OVERSTATEMENT", ViolationType.OVERSTATEMENT, "VIO_OVR_DETECTOR_FAIL"),
+    ("SUBJECTIVE", ViolationType.SUBJECTIVE, "VIO_SUB_DETECTOR_FAIL"),
+    ("CONTRADICTION", ViolationType.CONTRADICTION, "VIO_CON_DETECTOR_FAIL"),
+    ("FORBIDDEN_WORD", ViolationType.FORBIDDEN_WORD, "VIO_FBD_DETECTOR_FAIL"),
+    ("MISSING_REQUIREMENT", ViolationType.MISSING_REQUIREMENT, "VIO_MRQ_DETECTOR_FAIL"),
+)
 
 
 class ViolationDetector:
@@ -29,16 +49,54 @@ class ViolationDetector:
         self._missing_req = MissingReqDetector()
 
     async def detect(self, input_data: DetectionInput) -> DetectionResult:
-        violations_lists = await asyncio.gather(
-            asyncio.to_thread(self._run_overstatement, input_data),
-            asyncio.to_thread(self._run_subjective, input_data),
-            asyncio.to_thread(self._run_contradiction, input_data),
-            asyncio.to_thread(self._run_forbidden_word, input_data),
-            asyncio.to_thread(self._run_missing_requirement, input_data),
+        timeout = float(
+            os.getenv("COMPLIANCE_DETECTOR_TIMEOUT_SECONDS", _DEFAULT_DETECTOR_TIMEOUT_SECONDS)
         )
+        calls = (
+            self._run_overstatement,
+            self._run_subjective,
+            self._run_contradiction,
+            self._run_forbidden_word,
+            self._run_missing_requirement,
+        )
+        detector_results = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    asyncio.to_thread(call, input_data),
+                    timeout=timeout,
+                )
+                for call in calls
+            ),
+            return_exceptions=True,
+        )
+
         result = DetectionResult()
-        for violations in violations_lists:
-            result.violations.extend(violations)
+        for meta, detector_result in zip(_DETECTOR_META, detector_results):
+            name, violation_type, failure_id = meta
+            if isinstance(detector_result, BaseException):
+                is_timeout = isinstance(detector_result, asyncio.TimeoutError)
+                failure_kind = f"{timeout:g}초 제한시간 초과" if is_timeout else "실행 오류"
+                logger.error(
+                    "Compliance detector %s failed: %s",
+                    name,
+                    detector_result,
+                )
+                result.violations.append(
+                    Violation(
+                        violation_id=failure_id,
+                        type=violation_type,
+                        severity=Severity.HIGH,
+                        original_text="",
+                        regulation="검증 시스템 운영 점검 필요",
+                        reason=(
+                            f"{name} 탐지기가 {failure_kind}로 완료되지 않았습니다. "
+                            "나머지 탐지 결과는 보존했으며 해당 규칙은 수동 검토가 필요합니다."
+                        ),
+                        manual_flag=True,
+                    )
+                )
+                continue
+            result.violations.extend(detector_result)
         return result
 
     def _run_overstatement(self, data: DetectionInput) -> list[Violation]:

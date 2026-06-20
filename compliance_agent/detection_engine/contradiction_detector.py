@@ -12,9 +12,10 @@ import itertools
 import re
 from dataclasses import dataclass
 
-import anthropic
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from compliance_agent.models import DetectionInput, Severity, Violation, ViolationType
+from compliance_agent.providers import get_compliance_llm
 from .subjective_detector import _parse_llm_json  # JSON 파싱 헬퍼 재사용
 
 # 조항 구분자 – "제N조", "제N항", "①②", "가. 나.", "1.", "(1)", "[N]" 등
@@ -74,16 +75,16 @@ class _SectionPair:
 class ContradictionDetector:
     """Rule 3: 조항 간 논리 충돌 탐지 (구조 분석 + LLM)"""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
-        # 클라이언트는 첫 호출 시점에 생성 (API 키 없는 환경에서도 인스턴스 생성 가능)
-        self._client: anthropic.Anthropic | None = None
-        self._model = model
+    def __init__(self, llm_factory=None) -> None:
+        self._llm_factory = llm_factory
+        self._llm_cache: dict[str, object] = {}
 
-    @property
-    def client(self) -> anthropic.Anthropic:
-        if self._client is None:
-            self._client = anthropic.Anthropic()
-        return self._client
+    def _get_llm(self, model_override: str | None):
+        key = model_override or "__upstage_fallback__"
+        if key not in self._llm_cache:
+            factory = self._llm_factory or get_compliance_llm
+            self._llm_cache[key] = factory(model_override)
+        return self._llm_cache[key]
 
     def detect(self, data: DetectionInput) -> list[Violation]:
         sections = self._split_sections(data.content)
@@ -92,7 +93,7 @@ class ContradictionDetector:
         llm_failures = 0
 
         for pair in candidate_pairs[:_MAX_PAIRS]:
-            result = self._check_contradiction_by_llm(pair)
+            result = self._check_contradiction_by_llm(pair, data.model_override)
             if result is _LLM_FAILED:
                 llm_failures += 1
                 continue
@@ -152,7 +153,7 @@ class ContradictionDetector:
         return pairs
 
     def _check_contradiction_by_llm(
-        self, pair: _SectionPair
+        self, pair: _SectionPair, model_override: str | None
     ) -> tuple[str, str] | None | object:
         """모순이면 (subject, reason), 모순 없으면 None, LLM 오류면 _LLM_FAILED 반환."""
         try:
@@ -160,14 +161,11 @@ class ContradictionDetector:
                 section_a=pair.text_a,
                 section_b=pair.text_b,
             )
-            message = self.client.messages.create(
-                model=self._model,
-                max_tokens=256,
-                temperature=0.1,
-                system=_LLM_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            result = _parse_llm_json(message.content[0].text)
+            message = self._get_llm(model_override).invoke([
+                SystemMessage(content=_LLM_SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ])
+            result = _parse_llm_json(str(message.content))
             if result.get("is_contradiction"):
                 return result.get("subject", "미상"), result.get("reason", "")
             return None

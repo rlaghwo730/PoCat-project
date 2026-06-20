@@ -51,7 +51,9 @@ def test_compliance_node_문서별점수와종합백분율(monkeypatch):
             )
 
     monkeypatch.setattr(nodes, "_get_compliance_agent", lambda: FakeAgent())
-    result = asyncio.run(nodes.compliance_node(_state()))
+    result = asyncio.run(
+        nodes.compliance_node(_state(), model_override="openai/gpt-oss-20b:free")
+    )
 
     assert result["status"] == "PASS"
     assert result["compliance_score_pct"] > 0
@@ -60,6 +62,9 @@ def test_compliance_node_문서별점수와종합백분율(monkeypatch):
     }
     business = next(i for i in seen_inputs if i.section_type == "사업방법서")
     assert business.coverage_context is None
+    assert all(
+        item.model_override == "openai/gpt-oss-20b:free" for item in seen_inputs
+    )
 
 
 def test_supervisor_최종검증실패는수동검토종료(monkeypatch):

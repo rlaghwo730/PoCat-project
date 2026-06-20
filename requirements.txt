@@ -32,7 +32,6 @@ python-docx>=1.1.0
 
 # Monitoring
 langfuse==4.7.1
-anthropic==0.104.1
 
 # DB
 psycopg2-binary==2.9.12

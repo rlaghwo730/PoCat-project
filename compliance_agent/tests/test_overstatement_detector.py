@@ -14,14 +14,12 @@ def detector():
 def _mock_caveat_llm(mocker, is_real_caveat: bool):
     """LLM의 caveat 검증 응답을 고정한다."""
     response_text = json.dumps({"is_real_caveat": is_real_caveat, "reason": "테스트"})
-    mock_content = MagicMock()
-    mock_content.text = response_text
     mock_message = MagicMock()
-    mock_message.content = [mock_content]
+    mock_message.content = response_text
     mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_message
+    mock_client.invoke.return_value = mock_message
     mocker.patch(
-        "compliance_agent.detection_engine.overstatement_detector.anthropic.Anthropic",
+        "compliance_agent.detection_engine.overstatement_detector.get_compliance_llm",
         return_value=mock_client,
     )
     return mock_client
@@ -122,9 +120,9 @@ class TestOverstatementDetector:
     def test_caveat_llm_오류시_보수적으로_위반처리(self, mocker):
         """LLM 호출 실패 시 보수적으로 위반으로 처리한다 (CLAUDE.md 원칙)."""
         mock_client = MagicMock()
-        mock_client.messages.create.side_effect = Exception("API 오류")
+        mock_client.invoke.side_effect = Exception("API 오류")
         mocker.patch(
-            "compliance_agent.detection_engine.overstatement_detector.anthropic.Anthropic",
+            "compliance_agent.detection_engine.overstatement_detector.get_compliance_llm",
             return_value=mock_client,
         )
         detector = OverstatementDetector()
@@ -140,4 +138,4 @@ class TestOverstatementDetector:
         data = make_input("입원 치료비를 전액보장합니다.")
         violations = OverstatementDetector().detect(data)
         assert len(violations) >= 1
-        mock_client.messages.create.assert_not_called()
+        mock_client.invoke.assert_not_called()
