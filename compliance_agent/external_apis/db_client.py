@@ -3,6 +3,10 @@ C파트 법령규제 파이프라인 산출물(ChromaDB / PostgreSQL)에 연결�
 
 연결 우선순위: ChromaDB → PostgreSQL → 빈 리스트 반환(상위 호출부의 mock fallback 위임)
 DB 연결이 불가한 경우 앱이 죽지 않도록 경고 로그와 빈 리스트를 반환한다.
+
+PostgreSQL은 팀 공통 설정인 DB_API_URL을 우선 사용하며 DATABASE_URL과
+PG* 개별 환경변수도 하위 호환한다. DB_API_URL은 이름과 달리 API key가 아니라
+PostgreSQL connection URL이다.
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from compliance_agent.models.violation import Severity
 
@@ -108,7 +113,9 @@ def _chroma_dir() -> Path:
 
 
 def _pg_url() -> str | None:
-    url = os.getenv("DATABASE_URL")
+    # backend/src/tools/db_tool.py와 generation_agent가 사용하는 팀 공통 변수.
+    # 기존 Compliance 배포의 DATABASE_URL도 계속 지원한다.
+    url = os.getenv("DB_API_URL") or os.getenv("DATABASE_URL")
     if url:
         return url
     host = os.getenv("PGHOST")
@@ -117,7 +124,12 @@ def _pg_url() -> str | None:
     user = os.getenv("PGUSER")
     pw   = os.getenv("PGPASSWORD", "")
     if host and db and user:
-        return f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}"
+        sslmode = os.getenv("PGSSLMODE", "")
+        suffix = f"?sslmode={sslmode}" if sslmode else ""
+        return (
+            f"postgresql+psycopg2://{quote_plus(user)}:{quote_plus(pw)}"
+            f"@{host}:{port}/{quote_plus(db)}{suffix}"
+        )
     return None
 
 
@@ -298,33 +310,37 @@ def _search_postgres(query: str, section_type: str) -> list[LegalChunkItem]:
         chunk_types = _SECTION_TYPE_TO_CHUNK_TYPES.get(section_type)
         # 매핑이 없으면 전체 chunk_type 대상 검색 (보수적 탐색)
         if chunk_types:
-            type_filter = "AND chunk_type = ANY(:ctypes)"
+            type_filter = "AND document_type = ANY(:ctypes)"
         else:
             type_filter = ""
 
+        # backend/src/tools/db_tool.py 및 법률 데이터 파이프라인이 공통으로
+        # 조회하는 통합 테이블을 사용한다. metadata_json에 mandatory=true가
+        # 명시된 청크만 MissingReqDetector의 필수항목으로 채택된다.
         sql = _sa_text(f"""
             SELECT
-                registry_id,
+                COALESCE(source_identifier, content_hash) AS registry_id,
                 source_id,
-                vector_collection,
-                document_title,
-                chunk_type,
+                source_domain AS vector_collection,
+                document_name AS document_title,
+                document_type AS chunk_type,
                 article_no,
-                article_title,
-                LEFT(chunk_text, 500) AS chunk_text
-            FROM retrieval_chunk_registry
+                title AS article_title,
+                LEFT(content, 500) AS chunk_text,
+                metadata_json
+            FROM unified_retrieval_chunk
             WHERE
-                current_version_yn = 'Y'
+                is_active = TRUE
                 AND (
-                    chunk_text    ILIKE :q
-                    OR document_title ILIKE :q
-                    OR article_title  ILIKE :q
+                    content       ILIKE :q
+                    OR document_name ILIKE :q
+                    OR title         ILIKE :q
                 )
                 {type_filter}
             ORDER BY
                 CASE
-                    WHEN article_title  ILIKE :q THEN 1
-                    WHEN document_title ILIKE :q THEN 2
+                    WHEN title         ILIKE :q THEN 1
+                    WHEN document_name ILIKE :q THEN 2
                     ELSE 3
                 END
             LIMIT :lim
@@ -345,13 +361,22 @@ def _search_postgres(query: str, section_type: str) -> list[LegalChunkItem]:
 
 
 def _pg_row_to_item(row: Any) -> LegalChunkItem:
-    registry_id    = str(row.registry_id    or "")
-    document_title = str(row.document_title or "")
-    article_no     = str(row.article_no     or "")
-    article_title  = str(row.article_title  or "")
-    chunk_text     = str(row.chunk_text     or "")
-    chunk_type     = str(row.chunk_type     or "")
-    vector_coll    = str(row.vector_collection or "")
+    registry_id    = str(getattr(row, "registry_id", "") or "")
+    document_title = str(getattr(row, "document_title", "") or "")
+    article_no     = str(getattr(row, "article_no", "") or "")
+    article_title  = str(getattr(row, "article_title", "") or "")
+    chunk_text     = str(getattr(row, "chunk_text", "") or "")
+    chunk_type     = str(getattr(row, "chunk_type", "") or "")
+    vector_coll    = str(getattr(row, "vector_collection", "") or "")
+
+    metadata = getattr(row, "metadata_json", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    mandatory_raw = metadata.get("mandatory", False)
+    is_mandatory = mandatory_raw is True or str(mandatory_raw).lower() in {
+        "true", "y", "yes", "1"
+    }
+    requirement_type = str(metadata.get("requirement_type", "") or "")
 
     name = " ".join(filter(None, [document_title, article_no, article_title])) or registry_id
 
@@ -367,14 +392,17 @@ def _pg_row_to_item(row: Any) -> LegalChunkItem:
         chunk_text=chunk_text,
         chunk_type=chunk_type,
         score=0.0,
+        is_mandatory=is_mandatory,
+        requirement_type=requirement_type,
     )
 
 
 # ── 공개 클라이언트 ───────────────────────────────────────────────────────────
 class DBClient:
     def __init__(self) -> None:
-        if not MOCK_MODE:
-            self._base_url = os.environ.get("DB_API_URL", "")
+        # 연결 정보는 검색 시 _pg_url()에서 읽는다. 인스턴스 생성 시 값을
+        # 캐시하지 않아 테스트/배포 환경변수 변경도 즉시 반영한다.
+        pass
 
     def search(self, query: str, section_type: str) -> list[LegalChunkItem]:
         """
@@ -382,7 +410,7 @@ class DBClient:
 
         검색 우선순위:
           1. ChromaDB (의미 검색)
-          2. PostgreSQL retrieval_chunk_registry (키워드 검색 보완)
+          2. PostgreSQL unified_retrieval_chunk (키워드 검색 보완)
           3. 둘 다 결과 없음 → 빈 리스트 반환
              → missing_req_detector._fetch_required_items 의 mock fallback 으로 위임
 

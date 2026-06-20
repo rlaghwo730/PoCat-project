@@ -2,9 +2,9 @@
 Rule 5 – MISSING_REQUIREMENT 탐지기
 탐지 레이어: DB 검색 (db_client.search) → 키워드 존재 여부 확인
 
-DB팀 RAG API로 필수 기재사항 목록을 조회하고,
+팀 공통 RAG 저장소로 필수 기재사항 목록을 조회하고,
 각 항목이 약관 본문에 존재하는지 검사한다.
-DB팀 API 미제공 시 mock 데이터로 대체한다.
+저장소 미연결 또는 명시적 mandatory 메타데이터가 없으면 mock 데이터로 대체한다.
 근거: 보험업 감독업무 시행세칙 제5-16조 (보험약관 필수 기재사항)
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ class _RequiredItem:
 
 
 # ── Mock 필수 기재사항 목록 ──────────────────────────────────────────────────
-# DB팀 API 연결 후 이 목록을 동적으로 교체한다.
+# RAG 저장소에 구조화된 필수항목이 있으면 동적으로 교체한다.
 MOCK_REQUIRED_ITEMS: list[_RequiredItem] = [
     _RequiredItem(
         item_id="REQ_001",
@@ -103,7 +103,7 @@ _VALID_SECTION_TYPES: frozenset[str] = frozenset({"약관", "상품설명서", "
 
 
 def _fetch_required_items(section_type: str) -> list[_RequiredItem]:
-    """DB팀 API 호출 시도 후 실패하거나 MOCK_MODE면 mock 반환."""
+    """RAG 조회 후 명시적 mandatory 항목만 사용하고, 없으면 mock 반환."""
     from compliance_agent.external_apis.db_client import MOCK_MODE
     if MOCK_MODE:
         return [item for item in MOCK_REQUIRED_ITEMS if section_type in item.section_types]

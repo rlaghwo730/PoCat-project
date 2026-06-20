@@ -11,6 +11,7 @@ DBClient 단위 테스트.
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from compliance_agent.external_apis.db_client import (
     _chroma_to_item,
     _extract_keywords,
     _infer_section_types,
+    _pg_url,
     _pg_row_to_item,
     _search_chroma,
     _search_postgres,
@@ -183,6 +185,26 @@ class TestPgRowToItem:
         item = _pg_row_to_item(row)
         assert isinstance(item, LegalChunkItem)
 
+    def test_metadata_json의_mandatory_필드를_보존(self):
+        row = SimpleNamespace(
+            registry_id="PG_MANDATORY_001",
+            document_title="보험업 감독업무 시행세칙",
+            article_no="제5-16조",
+            article_title="보험약관 필수 기재사항",
+            chunk_text="보험금 지급 사유를 기재하여야 한다.",
+            chunk_type="legal_article",
+            vector_collection="legal",
+            metadata_json={
+                "mandatory": True,
+                "requirement_type": "보험금 지급 사유",
+            },
+        )
+
+        item = _pg_row_to_item(row)
+
+        assert item.is_mandatory is True
+        assert item.requirement_type == "보험금 지급 사유"
+
 
 # ── _search_chroma (연결 없음 fallback) ───────────────────────────────────────
 
@@ -238,10 +260,46 @@ class TestSearchChromaFallback:
 
 class TestSearchPostgresFallback:
     def test_returns_empty_when_no_url(self):
-        env_keys = ["DATABASE_URL", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPORT"]
+        env_keys = ["DB_API_URL", "DATABASE_URL", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPORT"]
         with patch.dict("os.environ", {k: "" for k in env_keys}, clear=False):
             result = _search_postgres("보험금", "약관")
         assert result == []
+
+    def test_db_api_url을_팀공통_연결문자열로_사용(self):
+        with patch.dict(
+            "os.environ",
+            {"DB_API_URL": "postgresql://team:pw@db.example/teamdb", "DATABASE_URL": ""},
+            clear=False,
+        ):
+            assert _pg_url() == "postgresql://team:pw@db.example/teamdb"
+
+    def test_db_api_url이_database_url보다_우선(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "DB_API_URL": "postgresql://team:pw@db.example/teamdb",
+                "DATABASE_URL": "postgresql://legacy:pw@db.example/legacydb",
+            },
+            clear=False,
+        ):
+            assert _pg_url() == "postgresql://team:pw@db.example/teamdb"
+
+    def test_pg_개별환경변수의_특수문자를_url_encoding(self):
+        env = {
+            "DB_API_URL": "",
+            "DATABASE_URL": "",
+            "PGHOST": "localhost",
+            "PGPORT": "5432",
+            "PGDATABASE": "team db",
+            "PGUSER": "user@example.com",
+            "PGPASSWORD": "p@ss:word",
+            "PGSSLMODE": "require",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            assert _pg_url() == (
+                "postgresql+psycopg2://user%40example.com:p%40ss%3Aword"
+                "@localhost:5432/team+db?sslmode=require"
+            )
 
     def test_does_not_raise_on_connection_error(self):
         with patch("compliance_agent.external_apis.db_client._pg_url", return_value="postgresql+psycopg2://x:x@localhost/x"):

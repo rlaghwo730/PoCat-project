@@ -3,7 +3,7 @@
 Rule별 가중치: CRITICAL Rule일수록 점수 영향이 크다.
 
 신뢰도 상한:
-  - MOCK_MODE(DB_API_URL 미설정): 0.85 — RAG 실증 없이 mock 키워드만 검사한 결과임
+  - MOCK_MODE(실제 RAG 저장소 미연결): 0.85 — mock 키워드만 검사한 결과임
   - content_length < 200자: 0.70 — 내용이 너무 짧아 규정 준수 여부 충분히 검증 불가
   - content_length 200-499자: 0.85 — 일부 검증만 가능한 짧은 약관
   - 실제 RAG 연결 + 500자 이상: 1.0 (위반 없음 기준)
