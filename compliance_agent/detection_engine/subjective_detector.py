@@ -106,7 +106,9 @@ class SubjectiveDetector:
         llm_failures = 0
 
         for candidate in candidates:
-            result = self._is_subjective_by_llm(candidate, data.model_override)
+            result = self._is_subjective_by_llm(
+                candidate, data.model_override, data.langfuse_callbacks
+            )
             if result is None:
                 llm_failures += 1
             elif result:
@@ -155,7 +157,10 @@ class SubjectiveDetector:
         return candidates
 
     def _is_subjective_by_llm(
-        self, candidate: _Candidate, model_override: str | None
+        self,
+        candidate: _Candidate,
+        model_override: str | None,
+        callbacks: list,
     ) -> bool | None:
         """LLM 판단 결과를 반환한다. None은 호출·파싱 실패를 뜻한다."""
         try:
@@ -166,7 +171,7 @@ class SubjectiveDetector:
             message = self._get_llm(model_override).invoke([
                 SystemMessage(content=_LLM_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
-            ])
+            ], config={"callbacks": callbacks})
             text = str(message.content)
             result = _parse_llm_json(text)
             return bool(result.get("is_subjective", True))

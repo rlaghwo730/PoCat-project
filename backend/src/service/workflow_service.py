@@ -194,7 +194,10 @@ async def run_workflow(request: dict) -> dict:
                 config = {"callbacks": [langfuse_handler]}
 
                 graph = build_graph(model_override=model_override)
-                result = await graph.ainvoke(_initial_state(request), config=config)
+                result = await graph.ainvoke(
+                    _initial_state(request, [langfuse_handler]),
+                    config=config,
+                )
 
                 root_span.update(
                     output={
@@ -271,7 +274,11 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
                 config = {"callbacks": [langfuse_handler]}
 
                 graph = build_graph(model_override=model_override)
-                async for snapshot in graph.astream(_initial_state(request), stream_mode="values", config=config):
+                async for snapshot in graph.astream(
+                    _initial_state(request, [langfuse_handler]),
+                    stream_mode="values",
+                    config=config,
+                ):
                     final_state = snapshot
                     msgs = snapshot.get("messages", [])
                     last_msg = msgs[-1] if msgs else {}

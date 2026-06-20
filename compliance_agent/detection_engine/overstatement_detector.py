@@ -162,7 +162,7 @@ class OverstatementDetector:
                     # 2단계: LLM으로 caveat 실효성 검증 (false positive 방지)
                     window = _get_caveat_window(content, match.start(), match.end())
                     caveat_result = self._is_real_caveat_by_llm(
-                        window, label, data.model_override
+                        window, label, data.model_override, data.langfuse_callbacks
                     )
                     if caveat_result is None:
                         llm_failures += 1
@@ -205,7 +205,11 @@ class OverstatementDetector:
         return violations
 
     def _is_real_caveat_by_llm(
-        self, window: str, label: str, model_override: str | None
+        self,
+        window: str,
+        label: str,
+        model_override: str | None,
+        callbacks: list,
     ) -> bool | None:
         """LLM에게 caveat이 실제로 보장 범위를 제한하는지 판단시킨다.
         오류 시 None을 반환해 규정 위반과 운영 장애를 구분한다."""
@@ -214,7 +218,7 @@ class OverstatementDetector:
             message = self._get_llm(model_override).invoke([
                 SystemMessage(content=_CAVEAT_LLM_SYSTEM),
                 HumanMessage(content=prompt),
-            ])
+            ], config={"callbacks": callbacks})
             result = _parse_llm_json(str(message.content))
             return bool(result.get("is_real_caveat", False))
         except Exception:

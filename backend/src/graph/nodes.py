@@ -389,6 +389,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                 product_meta={"product_name": doc_req.get("product_name", "")},
                 coverage_context=coverage_by_section[section_type],
                 model_override=model_override,
+                langfuse_callbacks=state.get("langfuse_callbacks", []),
             ),
         )
         for document_key, section_type, document_content in documents

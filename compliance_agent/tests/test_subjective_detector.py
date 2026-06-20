@@ -33,10 +33,13 @@ class TestSubjectiveDetector:
         detector = SubjectiveDetector(llm_factory=factory)
         data = make_input("상당한 사유가 있는 경우 처리합니다.")
         data.model_override = "openai/gpt-oss-20b:free"
+        callback = object()
+        data.langfuse_callbacks = [callback]
 
         detector.detect(data)
 
         factory.assert_called_once_with("openai/gpt-oss-20b:free")
+        assert llm.invoke.call_args.kwargs["config"]["callbacks"] == [callback]
 
     def test_주관적표현_llm이_위반판정(self, mocker):
         _mock_llm(mocker, is_subjective=True)

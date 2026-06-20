@@ -93,7 +93,9 @@ class ContradictionDetector:
         llm_failures = 0
 
         for pair in candidate_pairs[:_MAX_PAIRS]:
-            result = self._check_contradiction_by_llm(pair, data.model_override)
+            result = self._check_contradiction_by_llm(
+                pair, data.model_override, data.langfuse_callbacks
+            )
             if result is _LLM_FAILED:
                 llm_failures += 1
                 continue
@@ -153,7 +155,10 @@ class ContradictionDetector:
         return pairs
 
     def _check_contradiction_by_llm(
-        self, pair: _SectionPair, model_override: str | None
+        self,
+        pair: _SectionPair,
+        model_override: str | None,
+        callbacks: list,
     ) -> tuple[str, str] | None | object:
         """모순이면 (subject, reason), 모순 없으면 None, LLM 오류면 _LLM_FAILED 반환."""
         try:
@@ -164,7 +169,7 @@ class ContradictionDetector:
             message = self._get_llm(model_override).invoke([
                 SystemMessage(content=_LLM_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
-            ])
+            ], config={"callbacks": callbacks})
             result = _parse_llm_json(str(message.content))
             if result.get("is_contradiction"):
                 return result.get("subject", "미상"), result.get("reason", "")

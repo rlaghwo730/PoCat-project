@@ -59,6 +59,7 @@ class DetectionInput:
     product_meta: dict[str, Any] = field(default_factory=dict)
     coverage_context: Optional[CoverageContext] = None
     model_override: Optional[str] = None  # Generation Agent와 동일한 사용자 선택 모델
+    langfuse_callbacks: list[Any] = field(default_factory=list)
 
 
 @dataclass

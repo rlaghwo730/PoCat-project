@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from backend.src.graph import nodes
-from backend.src.service.workflow_service import _build_result
+from backend.src.service.workflow_service import _build_result, _initial_state
 from compliance_agent.models import ComplianceReport
 
 
@@ -51,9 +51,11 @@ def test_compliance_node_문서별점수와종합백분율(monkeypatch):
             )
 
     monkeypatch.setattr(nodes, "_get_compliance_agent", lambda: FakeAgent())
-    result = asyncio.run(
-        nodes.compliance_node(_state(), model_override="openai/gpt-oss-20b:free")
-    )
+    callback = object()
+    result = asyncio.run(nodes.compliance_node(
+        _state(langfuse_callbacks=[callback]),
+        model_override="openai/gpt-oss-20b:free",
+    ))
 
     assert result["status"] == "PASS"
     assert result["compliance_score_pct"] > 0
@@ -65,6 +67,13 @@ def test_compliance_node_문서별점수와종합백분율(monkeypatch):
     assert all(
         item.model_override == "openai/gpt-oss-20b:free" for item in seen_inputs
     )
+    assert all(item.langfuse_callbacks == [callback] for item in seen_inputs)
+
+
+def test_initial_state에_langfuse_callback을_보존():
+    callback = object()
+    state = _initial_state({"document_request": {}}, [callback])
+    assert state["langfuse_callbacks"] == [callback]
 
 
 def test_supervisor_최종검증실패는수동검토종료(monkeypatch):
