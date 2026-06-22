@@ -12,6 +12,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..service.workflow_service import run_workflow, stream_workflow
+from ..tools.regulatory_risk_simulation_agent import (
+    DEFAULT_MODEL as DEFAULT_REGULATORY_RISK_MODEL,
+    simulate_regulatory_risks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +54,8 @@ class GenerateRequest(BaseModel):
     coverage_conditions:       dict
     applicant_info:            dict
     session_id:                str = Field(default="", description="세션 ID (빈 값이면 서버에서 자동 생성)")
-    model:                     Optional[str] = Field(default=None, description="OpenRouter 모델 ID")
+    model:                     Optional[str] = Field(default=None, description="LLM 모델 ID")
+    run_regulatory_risk_simulation: bool = False
 
 
 class ViolationUI(BaseModel):
@@ -82,6 +87,26 @@ class GenerateResponse(BaseModel):
     dictionary_findings: list[dict[str, Any]] = Field(default_factory=list)
     semantic_findings:   list[dict[str, Any]] = Field(default_factory=list)
     risk_dictionary_summary: dict[str, Any] = Field(default_factory=dict)
+    regulatory_risk_simulation_findings: list[dict[str, Any]] = Field(default_factory=list)
+    regulatory_risk_simulation_summary: dict[str, Any] = Field(default_factory=dict)
+    regulatory_risk_simulation_report: str = ""
+    safe_alternative_report: str = ""
+
+
+class RegulatoryRiskSimulationRequest(BaseModel):
+    document_type: str | None = None
+    draft_content: str
+    model: str | None = DEFAULT_REGULATORY_RISK_MODEL
+    max_findings: int = 5
+    use_llm: bool = True
+    use_full_compliance_agent: bool = False
+
+
+class RegulatoryRiskSimulationResponse(BaseModel):
+    regulatory_risk_simulation_findings: list = Field(default_factory=list)
+    regulatory_risk_simulation_summary: dict = Field(default_factory=dict)
+    regulatory_risk_simulation_report: str = ""
+    safe_alternative_report: str = ""
 
 
 # ── 미들웨어: 요청 ID 로깅 ─────────────────────────────────────────────────────
@@ -138,6 +163,31 @@ async def generate_clause(body: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
     return result
+
+
+@app.post("/regulatory-risk-simulation", response_model=RegulatoryRiskSimulationResponse)
+async def regulatory_risk_simulation(body: RegulatoryRiskSimulationRequest):
+    """Run post-generation regulatory gray-area risk simulation."""
+    try:
+        result = simulate_regulatory_risks(
+            draft_content=body.draft_content,
+            document_type=body.document_type,
+            request_context={"source": "ui_button"},
+            max_findings=body.max_findings,
+            use_llm=body.use_llm,
+            model_override=body.model or DEFAULT_REGULATORY_RISK_MODEL,
+            use_full_compliance_agent=body.use_full_compliance_agent,
+        )
+    except Exception as exc:
+        logger.exception("[regulatory-risk-simulation] failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {
+        "regulatory_risk_simulation_findings": result.get("findings", []),
+        "regulatory_risk_simulation_summary": result.get("summary", {}),
+        "regulatory_risk_simulation_report": result.get("regulatory_risk_simulation_report", ""),
+        "safe_alternative_report": result.get("safe_alternative_report", ""),
+    }
 
 
 @app.post("/generate/stream")
