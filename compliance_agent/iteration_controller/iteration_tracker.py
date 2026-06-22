@@ -55,16 +55,11 @@ class IterationTracker:
 
     def has_hard_loop(self) -> bool:
         """
-        직전 위반이 하나도 해결되지 않고 위반 수까지 늘어났을 때만 True.
-        (위반 수가 줄어들면 개선 중이므로 HARD_LOOP 아님)
+        위반 수가 이전보다 늘어났을 때만 HARD_LOOP.
+        위반 ID 비교 제거 - 단순 위반 수 증가만 체크.
         """
         if len(self._history) < 2:
             return False
-        previous_ids = {v.violation_id for v in self._history[-2]}
-        current_ids  = {v.violation_id for v in self._history[-1]}
-
-        # 직전 위반이 모두 잔존하고 위반 수도 늘어났을 때만 HARD_LOOP
-        no_improvement = previous_ids.issubset(current_ids)
-        got_worse = len(current_ids) >= len(previous_ids)
-
-        return bool(previous_ids) and no_improvement and got_worse
+        prev_count = len(self._history[-2])
+        curr_count = len(self._history[-1])
+        return curr_count > prev_count

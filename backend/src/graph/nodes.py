@@ -190,7 +190,7 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
                 or compliance_next_action.startswith("GENERATOR_FAILURE")
                 or compliance_next_action == "MANUAL_REVIEW_REQUIRED"
             ):
-                next_step = "end"
+                next_step = "edit"
                 extra["final_content"] = state["draft_content"]
                 situation = f"최대 반복({iteration}회) 도달 또는 수동 검토 필요 — 최종 약관을 출력합니다."
             else:
@@ -205,8 +205,8 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
                 else "최종 검증에서 위반이 남아 수동 검토 상태로 종료합니다."
             )
         elif compliance_next_action.startswith("GENERATOR_FAILURE"):
-            next_step = "end"
-            situation = "생성 결과가 수렴하지 않아 수동 검토 상태로 종료합니다."
+            next_step = "edit"
+            situation = "생성 결과가 수렴하지 않아 edit 노드에서 최종 문서를 생성합니다."
         elif compliance_next_action == "MANUAL_REVIEW_REQUIRED":
             next_step = "end"
             situation = "최대 검증 횟수에 도달해 수동 검토 상태로 종료합니다."
@@ -309,10 +309,17 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
             result = await asyncio.to_thread(agent.generate, request)
         else:
             violations = state.get("violations", [])
+            # severity 기준 정렬 후 상위 5개만 전달 (속도 유지)
+            severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            sorted_violations = sorted(
+                violations,
+                key=lambda v: severity_order.get(v.get("severity", "LOW"), 3)
+            )
             priority_fixes = [
-                f"{v.get('type', 'UNKNOWN')}: \"{v.get('original_text', '')[:80]}\" "
+                f"[{v.get('severity', 'UNKNOWN')}] {v.get('type', 'UNKNOWN')}: "
+                f"\"{v.get('original_text', '')[:80]}\" "
                 f"→ {v.get('reason', v.get('regulation', ''))}"
-                for v in violations[:5]
+                for v in sorted_violations[:5]
             ]
             feedback = {"priority_fixes": priority_fixes}
             result = await asyncio.to_thread(agent.regenerate, request, feedback, iteration + 1)
@@ -409,6 +416,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     ]
 
     try:
+        report = None
         reports = await asyncio.gather(
             *(agent.validate_async(item) for _, item in detection_inputs)
         )
@@ -465,9 +473,13 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.info("[compliance] status=%s violations=%d", status, len(violations))
 
         # compliance_agent의 실제 준수율 사용
-        accuracy = round(getattr(report, 'compliance_score', 0.0) * 100, 1)
-        if accuracy == 0.0 and not violations:
-            accuracy = 100.0
+        if report is not None:
+            accuracy = round(getattr(report, 'compliance_score', 0.0) * 100, 1)
+            if accuracy == 0.0 and not violations:
+                accuracy = 100.0
+        else:
+            total_rules = 8
+            accuracy = max(0.0, round((total_rules - len(violations)) / total_rules * 100, 1))
 
         history = state.get("accuracy_history", [])
         history = history + [{

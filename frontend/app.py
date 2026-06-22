@@ -882,7 +882,6 @@ def _to_docx_bytes(title: str, content: str) -> bytes:
 def render_result_panel(result: dict, model_label: str, show_all_docs: bool = True):
     final_status = result.get("status", "")
     action_word = "생성" if show_all_docs else "수정"
-    score_pct = float(result.get("compliance_score_pct", 0.0))
     if final_status == "COMPLIANCE_PASSED":
         st.success(
             f"✅ 법규 검토 통과 — {result.get('iteration', '?')}회 완료 "
@@ -904,30 +903,6 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
     if result.get("db_warning"):      st.warning(f"⚠️ {result['db_warning']}")
     if result.get("improvement_note"):st.info(f"📊 {result['improvement_note']}")
 
-    accuracy_history = result.get("accuracy_history", [])
-    if accuracy_history:
-        st.markdown("---")
-        st.subheader("📈 법규 준수율 개선 추이")
-        for h in accuracy_history:
-            iteration = h.get("iteration", 0)
-            accuracy = h.get("accuracy", 0)
-            violations = h.get("violations", 0)
-            status = h.get("status", "")
-            bar_filled = int(accuracy / 10)
-            bar = "█" * bar_filled + "░" * (10 - bar_filled)
-            if accuracy >= 80:
-                emoji = "🟢"
-            elif accuracy >= 60:
-                emoji = "🟡"
-            else:
-                emoji = "🔴"
-            is_post = h.get("is_post_edit", False)
-            label = "edit 후 최종" if is_post else f"iteration {iteration}"
-            st.markdown(
-                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
-                f"(위반 {violations}건, {status})"
-            )
-
     product_name = st.session_state.get("product_name", "보험상품")
     company      = st.session_state.get("insurance_company", "")
 
@@ -937,17 +912,20 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
         content = result.get("content", "")
         highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
         st.markdown(highlighted, unsafe_allow_html=True)
-        if content:
-            st.download_button(
-                "⬇️ 약관 다운로드 (.docx)",
-                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
-                file_name=f"{company}_{product_name}_약관.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
         accuracy_history = result.get("accuracy_history", [])
         if accuracy_history:
             st.markdown("---")
-            st.subheader("📈 법규 준수율 개선 추이")
+            col_title, col_download = st.columns([3, 1])
+            with col_title:
+                st.subheader("📈 법규 준수율 개선 추이")
+            with col_download:
+                if content:
+                    st.download_button(
+                        "⬇️ 약관 다운로드 (.docx)",
+                        data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                        file_name=f"{company}_{product_name}_약관.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
             for h in accuracy_history:
                 iteration  = h.get("iteration", 0)
                 accuracy   = h.get("accuracy", 0)
@@ -963,6 +941,36 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 )
         return
 
+    content = result.get("content", "")
+    accuracy_history = result.get("accuracy_history", [])
+    if accuracy_history:
+        st.markdown("---")
+        col_title, col_download = st.columns([3, 1])
+        with col_title:
+            st.subheader("📈 법규 준수율 개선 추이")
+        with col_download:
+            if content:
+                st.download_button(
+                    "⬇️ 약관 다운로드 (.docx)",
+                    data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                    file_name=f"{company}_{product_name}_약관.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+        for h in accuracy_history:
+            iteration  = h.get("iteration", 0)
+            accuracy   = h.get("accuracy", 0)
+            violations = h.get("violations", 0)
+            h_status   = h.get("status", "")
+            bar_filled = int(accuracy / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+            label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+            st.markdown(
+                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
+                f"(위반 {violations}건, {h_status})"
+            )
+        st.markdown("---")
+
     # 항상 3탭 고정 (AI 생성 모드)
     tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
 
@@ -970,13 +978,6 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
         content = result.get("content", "")
         highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
         st.markdown(highlighted, unsafe_allow_html=True)
-        if content:
-            st.download_button(
-                "⬇️ 약관 다운로드 (.docx)",
-                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
-                file_name=f"{company}_{product_name}_약관.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
 
     with tab_desc:
         desc = result.get("product_description", "")
@@ -998,24 +999,6 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 data=_to_docx_bytes(f"{company} {product_name} 사업방법서", biz),
                 file_name=f"{company}_{product_name}_사업방법서.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-
-    accuracy_history = result.get("accuracy_history", [])
-    if accuracy_history:
-        st.markdown("---")
-        st.subheader("📈 법규 준수율 개선 추이")
-        for h in accuracy_history:
-            iteration  = h.get("iteration", 0)
-            accuracy   = h.get("accuracy", 0)
-            violations = h.get("violations", 0)
-            h_status   = h.get("status", "")
-            bar_filled = int(accuracy / 10)
-            bar = "█" * bar_filled + "░" * (10 - bar_filled)
-            emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
-            label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
-            st.markdown(
-                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
-                f"(위반 {violations}건, {h_status})"
             )
 
 
