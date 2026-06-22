@@ -93,6 +93,17 @@ class TestSubjectiveDetector:
         violations = detector.detect(data)
         assert violations[0].severity == Severity.MEDIUM
 
+    def test_중첩패턴은_높은_심각도_우선(self, mocker):
+        _mock_llm(mocker, is_subjective=True)
+        detector = SubjectiveDetector()
+        data = make_input("회사가 요구하는 자료를 제출해야 합니다.")
+
+        violations = detector.detect(data)
+
+        assert len(violations) == 1
+        assert violations[0].severity == Severity.HIGH
+        assert "insurer_discretion" in violations[0].reason
+
     def test_근거_규정_포함(self, mocker):
         _mock_llm(mocker, is_subjective=True)
         detector = SubjectiveDetector()

@@ -35,6 +35,7 @@ class Violation:
     regulation: str
     reason: str
     manual_flag: bool = False  # SOFT_LOOP: 3회 연속 등장 → 수동 검토 필요
+    suggested_revision: str = ""  # LLM이 제안한 수정 방향 (없으면 빈 문자열)
 
 
 @dataclass
