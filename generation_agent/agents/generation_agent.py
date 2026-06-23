@@ -138,6 +138,9 @@ _SYSTEM_BIZ_METHOD = (
     "수치(보험료, 한도, 연령 등)는 UI에서 입력받은 값을 정확히 반영하세요."
 )
 
+_SYSTEM_DESC = _SYSTEM_DESCRIPTION
+_SYSTEM_BIZ  = _SYSTEM_BIZ_METHOD
+
 
 class GenerationAgent:
     def __init__(self) -> None:
@@ -577,6 +580,16 @@ class GenerationAgent:
         ]
         return "\n".join(lines)
 
+    def _build_desc_prompt(self, clause_content: str, request: dict) -> str:
+        desc_context = self._retrieve_context(request, doc_type="상품설명서")
+        return self._build_description_prompt(
+            clause_content + "\n\n---\n\n" + desc_context, request
+        )
+
+    def _build_biz_prompt(self, clause_content: str, request: dict) -> str:
+        context = self._retrieve_context(request, doc_type="사업방법서")
+        return self._build_biz_method_prompt(request, context)
+
     # ────────────────────────────────────────────────────────────────────────
     # 기존 인터페이스와의 하위 호환을 위한 래퍼 (generate 내부에서 통합 처리)
     # ────────────────────────────────────────────────────────────────────────
@@ -647,6 +660,24 @@ class GenerationAgent:
             "business_method":     biz_content,
         }
 
+    async def generate_product_description_parallel(self, clause_content: str, request: dict) -> dict:
+        """상품설명서 + 사업방법서 병렬 생성"""
+        import asyncio
+        llm = self._get_llm(request.get("model"))
+
+        desc_prompt = self._build_desc_prompt(clause_content, request)
+        biz_prompt  = self._build_biz_prompt(clause_content, request)
+
+        desc_response, biz_response = await asyncio.gather(
+            asyncio.to_thread(llm.invoke, [SystemMessage(content=_SYSTEM_DESC), HumanMessage(content=desc_prompt)]),
+            asyncio.to_thread(llm.invoke, [SystemMessage(content=_SYSTEM_BIZ), HumanMessage(content=biz_prompt)]),
+        )
+
+        return {
+            "product_description": desc_response.content,
+            "business_method":     biz_response.content,
+        }
+
     def _generate_biz_method(self, request: dict, llm=None) -> str:
         """사업방법서 생성 (내부 전용).
 
@@ -665,7 +696,7 @@ class GenerationAgent:
         ])
         return response.content
 
-    def regenerate(self, request: dict, feedback: dict, iteration: int) -> dict:
+    def regenerate(self, request: dict, feedback: dict, iteration: int, previous_draft: str = "") -> dict:
         """법규 위반 피드백 기반 약관 재생성."""
         model_override = request.get("model")
         llm = self._get_llm(model_override)
@@ -679,9 +710,18 @@ class GenerationAgent:
         base_prompt = self._build_clause_prompt(request, context, legal_context)
 
         fixes_text = "\n".join(f"- {fix}" for fix in priority_fixes)
+        previous_section = ""
+        if previous_draft:
+            previous_section = (
+                f"\n\n## 이전 약관 초안\n"
+                f"아래 약관을 기반으로 위반 항목만 최소한으로 수정하세요.\n"
+                f"위반이 없는 조항은 절대 변경하지 마세요:\n\n"
+                f"{previous_draft[:3000]}\n"
+            )
         regeneration_section = (
-            f"\n\n## 법규 준수 검토 피드백 (초안 #{iteration - 1} 검토 결과)\n"
-            f"아래 항목을 반드시 수정하여 약관을 재작성하세요:\n{fixes_text}\n"
+            f"{previous_section}"
+            f"\n\n## 법규 준수 검토 피드백\n"
+            f"아래 위반 항목만 수정하세요. 위반이 없는 조항은 절대 변경하지 마세요:\n{fixes_text}\n"
         )
 
         response = llm.invoke([

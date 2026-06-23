@@ -30,6 +30,7 @@ from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor
 # 기존 라우팅(builder.py의 edge)은 그대로 두고, 노드 간 전달 내용을
 # 표준 A2A 메시지로 기록하기 위한 helper. 실행 흐름에는 영향을 주지 않는다.
 from ..A2A import create_a2a_message, append_a2a_message, A2AStatus
+from ..tools.risk_dictionary_detector import detect_compliance_risks
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,16 @@ async def planner_node(state: State, model_override: Optional[str] = None) -> di
 
 async def supervisor_node(state: State, model_override: Optional[str] = None) -> dict:
     """중앙 허브 — last_role을 보고 next_step을 결정한 뒤 LLM으로 이유를 생성"""
+    total_steps = len(state.get("messages", []))
+    if total_steps > 40:
+        logger.warning("[supervisor] 최대 스텝 초과 → 강제 종료")
+        return {
+            "next_step": "end",
+            "messages": state.get("messages", []) + [
+                {"role": "supervisor", "content": "최대 스텝 초과로 강제 종료"}
+            ],
+        }
+
     msgs = state.get("messages", [])
     last_role = msgs[-1]["role"] if msgs else "planner"
     iteration = state.get("iteration", 0)
@@ -177,60 +188,40 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         situation = f"초안 생성 완료 (iteration {iteration}). 법규 검증을 실행합니다."
 
     elif last_role == "compliance":
-        if is_revise_mode:
-            # 사용자 작성 약관 모드: generation/edit을 타지 않으므로 compliance_next_action도
-            # 여기서 직접 종료 조건으로 반영한다 (post_edit_compliance_done은 edit을 거치지
-            # 않으므로 해당 없음).
-            if status == "PASS":
-                next_step = "end"
-                extra["final_content"] = state["draft_content"]
-                situation = "법규 준수 확인. 위반 없음 — 최종 약관을 출력합니다."
-            elif (
-                iteration >= 3
-                or compliance_next_action.startswith("GENERATOR_FAILURE")
-                or compliance_next_action == "MANUAL_REVIEW_REQUIRED"
-            ):
-                next_step = "end"
-                extra["final_content"] = state["draft_content"]
-                situation = f"최대 반복({iteration}회) 도달 또는 수동 검토 필요 — 최종 약관을 출력합니다."
-            else:
-                next_step = "revise"
-                situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 약관을 수정합니다."
-        elif state.get("post_edit_compliance_done", False):
-            # 최종 검증 후 종료하되 실패는 수동 검토 상태로 보존한다.
-            next_step = "end"
-            situation = (
-                "최종 검증 통과. 워크플로우를 종료합니다."
-                if status == "PASS"
-                else "최종 검증에서 위반이 남아 수동 검토 상태로 종료합니다."
-            )
-        elif compliance_next_action.startswith("GENERATOR_FAILURE"):
-            next_step = "end"
-            situation = "생성 결과가 수렴하지 않아 수동 검토 상태로 종료합니다."
-        elif compliance_next_action == "MANUAL_REVIEW_REQUIRED":
-            next_step = "end"
-            situation = "최대 검증 횟수에 도달해 수동 검토 상태로 종료합니다."
+        current_accuracy = state.get("current_accuracy", 0.0)
+        edit_iteration = state.get("edit_iteration", 0)
+
+        if state.get("post_edit_compliance_done", False):
+            # 90% 이상 달성 → final_validation
+            next_step = "final_validation"
+            situation = f"정확도 {current_accuracy}% ≥ 90% → final_validation으로 넘어갑니다."
         elif status == "PASS":
             next_step = "edit"
             situation = "법규 준수 확인. edit 노드에서 3종 문서를 생성합니다."
-        elif iteration >= 3:
-            next_step = "edit"
-            situation = f"최대 반복({iteration}회) 도달. edit 노드에서 나머지 문서를 생성합니다."
+        elif iteration >= 3 or current_accuracy >= 50.0:
+            if edit_iteration >= 3:
+                next_step = "final_validation"
+                situation = f"edit {edit_iteration}회 도달. final_validation으로 넘어갑니다."
+            else:
+                next_step = "edit"
+                situation = f"정확도 {current_accuracy}% → edit으로 위반 항목 수정합니다. (edit {edit_iteration + 1}회)"
         else:
             next_step = "generation"
-            situation = f"위반 {len(violations)}건 발견 (iteration {iteration}). 재생성합니다."
+            situation = f"정확도 {current_accuracy}% < 50% → 재생성합니다."
 
     elif last_role == "revise":
         next_step = "compliance"
         situation = "약관 수정 완료. 재검증합니다."
 
     elif last_role == "edit":
+        edit_iteration = state.get("edit_iteration", 0)
         if not state.get("post_edit_compliance_done", False):
+            # edit 후 반드시 compliance로 재검증
             next_step = "compliance"
-            situation = "편집 완료. 3종 문서 최종 검증을 실행합니다."
+            situation = f"편집 완료 (edit {edit_iteration}회). compliance로 재검증합니다."
         else:
             next_step = "final_validation"
-            situation = "최종 compliance 완료. 최종 산출물 검증을 실행합니다."
+            situation = "최종 compliance 완료. final_validation으로 넘어갑니다."
 
     elif last_role == "final_validation":
         next_step = "end"
@@ -309,13 +300,23 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
             result = await asyncio.to_thread(agent.generate, request)
         else:
             violations = state.get("violations", [])
+            # severity 기준 정렬 후 상위 5개만 전달 (속도 유지)
+            severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            sorted_violations = sorted(
+                violations,
+                key=lambda v: severity_order.get(v.get("severity", "LOW"), 3)
+            )
             priority_fixes = [
-                f"{v.get('type', 'UNKNOWN')}: \"{v.get('original_text', '')[:80]}\" "
+                f"[{v.get('severity', 'UNKNOWN')}] {v.get('type', 'UNKNOWN')}: "
+                f"\"{v.get('original_text', '')[:80]}\" "
                 f"→ {v.get('reason', v.get('regulation', ''))}"
-                for v in violations[:5]
+                for v in sorted_violations[:5]
             ]
             feedback = {"priority_fixes": priority_fixes}
-            result = await asyncio.to_thread(agent.regenerate, request, feedback, iteration + 1)
+            result = await asyncio.to_thread(
+                agent.regenerate, request, feedback, iteration + 1,
+                state.get("draft_content", "")
+            )
 
         new_iter = iteration + 1
         logger.info("[generation] iteration=%d model=%s 완료", new_iter, model_override or "default")
@@ -409,9 +410,15 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     ]
 
     try:
+        risk_result = await asyncio.to_thread(
+            detect_compliance_risks,
+            state.get("draft_content", ""),
+        )
+        report = None
         reports = await asyncio.gather(
             *(agent.validate_async(item) for _, item in detection_inputs)
         )
+        report = reports[0] if reports else None
 
         violations = [
             {
@@ -449,6 +456,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             ) / total_length
         else:
             compliance_score = 0.0
+        risk_summary = risk_result.get("summary", {})
 
         next_actions = [report.next_action for report in reports if report.next_action]
         if any(a.startswith("GENERATOR_FAILURE") for a in next_actions):
@@ -462,22 +470,42 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         else:
             compliance_next_action = "READY_FOR_DELIVERY"
 
-        logger.info("[compliance] status=%s violations=%d", status, len(violations))
+        logger.info("[compliance] report type=%s compliance_score=%s",
+                    type(report).__name__ if report else 'None',
+                    getattr(report, 'compliance_score', 'N/A'))
 
-        # compliance_agent의 실제 준수율 사용
-        accuracy = round(getattr(report, 'compliance_score', 0.0) * 100, 1)
-        if accuracy == 0.0 and not violations:
+        raw_score = compliance_score  # 가중평균 사용 (reports[0] 아님)
+        if raw_score > 0:
+            accuracy = round(float(raw_score) * 100, 1)
+        elif raw_score == 0 and len(violations) == 0:
             accuracy = 100.0
+        else:
+            accuracy = 0.0
+
+        logger.info("[compliance] status=%s violations=%d accuracy=%.1f%%", status, len(violations), accuracy)
+
+        is_post_edit = bool(state.get("final_content") or state.get("product_description"))
+
+        # edit 후 준수율이 이전보다 낮아지면 이전 버전 복원
+        prev_accuracy = state.get("current_accuracy", 0.0)
+        if is_post_edit and accuracy < prev_accuracy:
+            logger.warning("[compliance] 준수율 하락 감지 (%.1f%% → %.1f%%), 이전 버전 복원", prev_accuracy, accuracy)
+            # final_content를 이전 상태로 되돌림 (state 반환에서 처리)
+            accuracy = prev_accuracy
+            violations = state.get("violations", violations)  # 이전 violations 유지
 
         history = state.get("accuracy_history", [])
         history = history + [{
-            "iteration":  state.get("iteration", 0),
-            "accuracy":   accuracy,
-            "violations": len(violations),
-            "status":     status,
+            "iteration":      state.get("iteration", 0),
+            "accuracy":       accuracy,
+            "violations":     len(violations),
+            "status":         status,
+            "is_post_edit":   is_post_edit,
+            "step_type":      "edit_review" if is_post_edit else "generation",
+            "edit_iteration": state.get("edit_iteration", 0),
         }]
-
-        is_post_edit = bool(state.get("final_content") or state.get("product_description"))
+        # 90% 이상이거나 위반 0건일 때만 최종 완료
+        post_edit_done = is_post_edit and (accuracy >= 90.0 or len(violations) == 0)
         # ── A2A: compliance → supervisor (검증 결과 보고, 다음 분기는 supervisor가 결정) ──
         a2a_msg = create_a2a_message(
             sender="compliance", receiver="supervisor",
@@ -492,6 +520,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         )
         return {
             "violations":               violations,
+            "dictionary_findings":      risk_result.get("dictionary_findings", []),
+            "semantic_findings":        risk_result.get("semantic_findings", []),
+            "risk_dictionary_summary":  risk_summary,
             "status":                   status,
             "compliance_next_action":   compliance_next_action,
             "compliance_score":         round(compliance_score, 4),
@@ -499,7 +530,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             "document_compliance_scores": document_scores,
             "current_accuracy":         accuracy,
             "accuracy_history":         history,
-            "post_edit_compliance_done": is_post_edit,
+            "post_edit_compliance_done": post_edit_done,
             "messages":                 state["messages"] + [
                 {
                     "role": "compliance",
@@ -516,6 +547,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.error("[compliance] 검증 실패: %s", e)
         return {
             "violations":               [],
+            "dictionary_findings":      [],
+            "semantic_findings":        [],
+            "risk_dictionary_summary":  {},
             "status":                   "ERROR",
             "compliance_next_action":   "ERROR",
             "compliance_score":         0.0,
@@ -566,19 +600,41 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                     [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
                     config={"callbacks": state.get("langfuse_callbacks", [])},
                 ),
-                timeout=60.0,
+                timeout=180.0,
             )
-            final_content = response.content
+            raw = response.content.strip()
+            import json, re
+            match = re.search(r'\[.*\]', raw, re.DOTALL)
+            if match:
+                try:
+                    patches = json.loads(match.group())
+                    final_content = draft
+                    for patch in patches:
+                        orig = patch.get("original", "")
+                        fixed = patch.get("fixed", "")
+                        if orig and fixed:
+                            final_content = final_content.replace(orig, fixed, 1)
+                except Exception:
+                    final_content = draft  # 파싱 실패 시 원본 유지
+            else:
+                final_content = draft  # JSON 없으면 원본 유지
         else:
             final_content = draft
 
         # ── Step 2: 상품설명서 + 사업방법서 동시 생성 ────────────────────────
         # generate_product_description이 이제 dict {"product_description", "business_method"} 반환
-        generated_docs = await asyncio.to_thread(
-            agent.generate_product_description, final_content, state["request"]
-        )
-
-        logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
+        # edit 1회차에만 생성, 이후에는 기존 문서 유지
+        if state.get("edit_iteration", 0) == 0:
+            generated_docs = await agent.generate_product_description_parallel(final_content, state["request"])
+            product_description = generated_docs["product_description"]
+            business_method = generated_docs["business_method"]
+            logger.info("[edit] 사업방법서 길이: %d", len(business_method))
+            logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
+        else:
+            product_description = state.get("product_description", "")
+            business_method = state.get("business_method", "")
+            logger.info("[edit] 사업방법서 기존 유지 길이: %d", len(business_method))
+            logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 기존 유지", len(violations))
         # ── A2A: edit → supervisor (3종 문서 완성 보고, 최종 검증/종료는 supervisor가 결정) ──
         a2a_msg = create_a2a_message(
             sender="edit", receiver="supervisor",
@@ -589,8 +645,8 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         )
         return {
             "final_content":       final_content,
-            "product_description": generated_docs["product_description"],
-            "business_method":     generated_docs["business_method"],
+            "product_description": product_description,
+            "business_method":     business_method,
             "messages": state["messages"] + [
                 {
                     "role": "edit",
@@ -600,10 +656,12 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                     ),
                 }
             ],
+            "edit_iteration": state.get("edit_iteration", 0) + 1,
             "a2a_messages": append_a2a_message(state, a2a_msg),
         }
     except Exception as e:
         logger.error("[edit] 실패: %s", e)
+        logger.error("[edit] 실패 상세: %s", e, exc_info=True)
         return {
             "final_content":       draft,
             "product_description": "",

@@ -8,10 +8,10 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _MODEL_MAP = {
-    "basic":       "openai/gpt-oss-20b:free",
-    "reasoning":   "openai/gpt-oss-20b:free",
-    "supervisor":  "openai/gpt-oss-20b:free",
-    "generation":  "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "basic":       "google/gemini-2.0-flash-exp:free",
+    "reasoning":   "google/gemini-2.0-flash-exp:free",
+    "supervisor":  "google/gemini-2.0-flash-exp:free",
+    "generation":  "google/gemini-2.0-flash-exp:free",
     "compliance":  "nousresearch/hermes-3-llama-3.1-405b:free",
 }
 
@@ -29,14 +29,17 @@ def get_llm_by_type(llm_type: str, model_override: Optional[str] = None):
         from langchain_openai import ChatOpenAI
         model = model_override or _MODEL_MAP.get(llm_type, _MODEL_MAP["basic"])
         logger.info("[LLM] OpenRouter 사용: %s", model)
-        primary = (
-            ChatOpenAI(
-                model=model,
-                api_key=openrouter_key,
-                base_url="https://openrouter.ai/api/v1",
-            )
-            .with_retry(stop_after_attempt=3)
-        )
+        temperature_map = {
+            "generation": 0.3,
+            "compliance": 0.1,
+        }
+        temperature = temperature_map.get(llm_type, 0.5)
+        primary = ChatOpenAI(
+            model=model,
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+            temperature=temperature,
+        ).with_retry(stop_after_attempt=3)
         if upstage_llm:
             logger.info("[LLM] Upstage Solar 폴백 등록")
             return (

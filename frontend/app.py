@@ -148,6 +148,39 @@ NODE_EMOJI = {
     "revise":      "🔧",
 }
 
+REGULATORY_RISK_MODEL = "solar-pro"
+SAMPLE_CLARITY_DOCUMENTS = {
+    "약관": (
+        "제5조 보험금 지급\n"
+        "회사가 필요하다고 인정하는 경우 보험금을 지급합니다.\n"
+        "보험금 지급 사유에 해당하고 필요한 서류 제출 및 심사 절차를 거친 경우 보험금을 지급합니다.\n\n"
+        "제6조 보장 한도 및 자기부담금\n"
+        "보험금은 연간 보장 한도 및 자기 부담금 공제 후 지급합니다.\n"
+        "약관에서 정한 면책 사유 또는 이에 준하는 사유에 해당하는 경우 보험금을 지급하지 않습니다."
+    ),
+    "상품설명서": (
+        "보장 내용\n"
+        "이 상품은 다양한 의료비를 폭넓게 보장받을 수 있는 상품입니다.\n"
+        "주요 의료비에 대해 보장받을 수 있으나 일부 항목은 보장하지 않을 수 있습니다.\n\n"
+        "보험료 및 자기부담금\n"
+        "보험료 부담을 줄일 수 있으며 일정 비용만 부담하면 보장이 가능합니다.\n"
+        "갱신 시 보험료가 달라질 수 있습니다.\n\n"
+        "해지 및 환급금\n"
+        "계약을 중도해지하는 경우 환급금은 달라질 수 있습니다.\n"
+        "가입 전 주요 유의사항을 확인하시기 바랍니다."
+    ),
+    "사업방법서": (
+        "계약 인수\n"
+        "회사가 필요하다고 판단하는 경우 가입이 제한될 수 있습니다.\n"
+        "심사 결과에 따라 조건부 인수가 적용될 수 있습니다.\n\n"
+        "보험금 지급 심사\n"
+        "추가 확인이 필요한 경우 보험금 지급이 제한될 수 있습니다.\n"
+        "회사의 내부 기준에 따라 지급 여부를 결정할 수 있습니다.\n\n"
+        "운영 기준\n"
+        "예외적으로 달리 적용할 수 있으며 필요 시 기준을 변경할 수 있습니다."
+    ),
+}
+
 # ────────────────────────────────────────────────────────────────────────────
 # 페이지 설정
 # ────────────────────────────────────────────────────────────────────────────
@@ -333,6 +366,12 @@ def _init_session():
         st.session_state.session_id = str(uuid4())
     if "workflow_mode" not in st.session_state:
         st.session_state.workflow_mode = WORKFLOW_MODE_GENERATE
+
+    if "generated_result" not in st.session_state:
+        st.session_state.generated_result = None
+
+    if "regulatory_risk_result" not in st.session_state:
+        st.session_state.regulatory_risk_result = None
 
     snap = st.session_state.get("_form_snapshot", {})
     defaults = COMPANY_DEFAULTS["삼성화재"]
@@ -822,6 +861,194 @@ def build_revise_request(model=None) -> dict:
 # 위반 하이라이트
 # ────────────────────────────────────────────────────────────────────────────
 
+
+async def _run_parallel() -> list[dict]:
+    async with aiohttp.ClientSession() as session:
+        return list(await asyncio.gather(*[_post_one(session, m) for m in MODELS]))
+
+
+def extract_text_from_nested_result(obj, max_depth: int = 4) -> tuple[str, str]:
+    best_text = ""
+    best_path = ""
+
+    def visit(value, path: str, depth: int) -> None:
+        nonlocal best_text, best_path
+        if depth > max_depth:
+            return
+        if isinstance(value, str):
+            text = value.strip()
+            if len(text) > len(best_text):
+                best_text = text
+                best_path = path
+            return
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                visit(nested, f"{path}.{key}" if path else str(key), depth + 1)
+            return
+        if isinstance(value, list):
+            text_items = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+            if text_items:
+                combined = "\n".join(text_items)
+                if len(combined) > len(best_text):
+                    best_text = combined
+                    best_path = path
+            for index, nested in enumerate(value[:10]):
+                visit(nested, f"{path}[{index}]", depth + 1)
+
+    visit(obj, "", 0)
+    return best_text, best_path
+
+
+def extract_generated_document_text(result: dict, document_type: str = "약관") -> tuple[str, str]:
+    fields_by_document_type = {
+        "약관": ["final_content", "final_document", "draft_content", "content", "generated_draft", "generated_text"],
+        "상품설명서": ["product_description", "description", "product_description_content", "final_document"],
+        "사업방법서": ["business_method", "business_method_content", "operation_method"],
+    }
+    candidate_fields = fields_by_document_type.get(document_type, []) + [
+        "final_content",
+        "final_document",
+        "draft_content",
+        "content",
+        "generated_draft",
+        "generated_text",
+        "product_description",
+        "business_method",
+        "answer",
+    ]
+    for key in candidate_fields:
+        value = result.get(key)
+        if isinstance(value, str) and len(value.strip()) > 20:
+            return value.strip(), key
+        if isinstance(value, (dict, list)):
+            nested_text, nested_path = extract_text_from_nested_result(value, max_depth=3)
+            if len(nested_text.strip()) > 20:
+                return nested_text.strip(), f"{key}.{nested_path}" if nested_path else key
+    nested_text, nested_path = extract_text_from_nested_result(result)
+    if len(nested_text.strip()) > 20:
+        return nested_text.strip(), nested_path or "nested"
+    return "", ""
+
+
+def run_regulatory_risk_simulation(
+    draft_content: str,
+    document_type: str = "약관",
+    selected_document_field: str = "",
+) -> dict:
+    response = requests.post(
+        f"{BACKEND_URL}/regulatory-risk-simulation",
+        json={
+            "document_type": document_type,
+            "draft_content": draft_content,
+            "model": REGULATORY_RISK_MODEL,
+            "max_findings": 5,
+            "use_llm": True,
+            "use_full_compliance_agent": False,
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if selected_document_field:
+        result["_frontend_selected_document_field"] = selected_document_field
+        result["_frontend_document_text_length"] = len(draft_content or "")
+        result["_frontend_document_text_preview"] = (draft_content or "")[:500]
+    return result
+
+
+def render_regulatory_risk_result(result: dict) -> None:
+    findings = result.get("regulatory_risk_simulation_findings", [])
+    summary = result.get("regulatory_risk_simulation_summary", {})
+    source_label = "Neon DB" if summary.get("gray_zone_type_source") == "db" else "기본 평가 기준"
+    llm_label = "Upstage Solar Pro 사용" if summary.get("llm_used") else "기본 문장 기준 사용"
+    document_type = summary.get("document_type") or "약관"
+    matched_labels = sorted(
+        {
+            item.get("gray_zone_risk_label")
+            for item in findings
+            if item.get("gray_zone_risk_label")
+        }
+    )
+
+    st.info(
+        "본 기능은 소비자보호 관점에서 초안 문장의 명확성을 평가하고, 더 명확한 문장 제안을 함께 제공합니다. "
+        "본 결과는 법적 적법성 판단이나 Compliance 검증 결과가 아닙니다."
+    )
+    st.markdown("### 평가 결과 요약")
+    col_count, col_doc, col_source, col_types, col_llm = st.columns(5)
+    col_count.metric("평가 후보", f"{len(findings)}건")
+    col_doc.metric("문서 유형", document_type)
+    col_source.metric("평가 기준", source_label)
+    col_types.metric("평가 유형", f"{summary.get('gray_zone_type_count', 0)}개")
+    col_llm.metric("LLM 보강", "사용" if summary.get("llm_used") else "미사용")
+    st.caption(
+        f"{llm_label} · 제목형 라인 제외 {summary.get('excluded_heading_count', 0)}건 · "
+        "원문 제목이나 조항명만으로는 평가 결과를 만들지 않습니다."
+    )
+    if matched_labels:
+        st.markdown(f"**적용된 평가 항목:** {', '.join(matched_labels)}")
+
+    if not findings:
+        st.warning(
+            "현재 문서에서는 DB 평가 기준과 직접 매칭되는 불명확 표현 후보가 발견되지 않았습니다.\n\n"
+            "이는 문서가 법적으로 적합하다는 판단이 아니라, 현재 등록된 평가 유형과 직접 매칭되는 표현이 없다는 의미입니다."
+        )
+        st.info(
+            "시연용으로 문서유형별 예시 문서를 실행하면 평가 결과가 어떤 방식으로 표시되는지 확인할 수 있습니다."
+        )
+        sample_text = SAMPLE_CLARITY_DOCUMENTS.get(document_type)
+        if sample_text and st.button(
+            f"현재 문서유형 예시로 평가 실행 ({document_type})",
+            key=f"run_zero_sample_{document_type}",
+            use_container_width=True,
+        ):
+            st.session_state.regulatory_risk_result = run_regulatory_risk_simulation(
+                sample_text,
+                document_type=document_type,
+                selected_document_field=f"sample:{document_type}",
+            )
+            st.rerun()
+        with st.expander("개발자용 미매칭 후보 보기", expanded=False):
+            st.write("body_candidate_count", summary.get("body_candidate_count", 0))
+            st.write("sample_unmatched_body_candidates", summary.get("sample_unmatched_body_candidates", []))
+
+    for index, item in enumerate(findings, 1):
+        label = item.get("gray_zone_risk_label") or item.get("gray_zone_risk_type", "")
+        unclear_points = item.get("unclear_points_in_source") or item.get("matched_patterns", [])
+        if isinstance(unclear_points, list):
+            unclear_points_text = ", ".join(str(point) for point in unclear_points if str(point).strip())
+        else:
+            unclear_points_text = str(unclear_points or "")
+        with st.expander(f"평가 결과 {index}. {label}", expanded=index == 1):
+            st.markdown(f"**원문 문장**\n\n{item.get('source_text', '')}")
+            st.markdown(f"**원문 내 불명확 가능 지점**\n\n{unclear_points_text}")
+            st.write("평가 유형", item.get("gray_zone_risk_type", ""))
+            st.markdown(
+                "**불명확하게 해석될 수 있는 표현 예시**\n\n"
+                f"{item.get('ambiguous_expression_example', '')}"
+            )
+            st.markdown(f"**불명확성 사유**\n\n{item.get('why_ambiguous', '')}")
+            st.markdown(f"**소비자 오해 가능성**\n\n{item.get('consumer_confusion_point', '')}")
+            st.markdown(f"**명확화 기준**\n\n{item.get('safe_rewrite_guideline', '')}")
+            st.markdown(f"**명확한 문장 제안**\n\n{item.get('strengthened_safe_sentence', '')}")
+            if item.get("nearest_heading"):
+                st.caption(f"가까운 제목: {item.get('nearest_heading')}")
+            with st.expander("분류 상세 보기", expanded=False):
+                st.write("matched_patterns", item.get("matched_patterns", []))
+                st.write("final_classification", item.get("final_classification"))
+                st.write("gray_zone_classification", item.get("gray_zone_classification"))
+                st.write("classification_basis", item.get("classification_basis"))
+                st.write("LLM 보강 상태", item.get("llm_judgement", {}))
+
+    with st.expander("문장 명확성 평가 보고서 미리보기"):
+        st.markdown(result.get("regulatory_risk_simulation_report", ""))
+    with st.expander("명확한 문장 제안 보고서 미리보기"):
+        st.markdown(result.get("safe_alternative_report", ""))
+    with st.expander("개발자용 원본 응답 보기", expanded=False):
+        st.json(result)
+
+
+# ── 위반 하이라이트 ───────────────────────────────────────────────────────────
 def apply_violation_highlights(content: str, violations: list) -> str:
     for v in violations:
         original = v.get("original_text", "")
@@ -882,7 +1109,6 @@ def _to_docx_bytes(title: str, content: str) -> bytes:
 def render_result_panel(result: dict, model_label: str, show_all_docs: bool = True):
     final_status = result.get("status", "")
     action_word = "생성" if show_all_docs else "수정"
-    score_pct = float(result.get("compliance_score_pct", 0.0))
     if final_status == "COMPLIANCE_PASSED":
         st.success(
             f"✅ 법규 검토 통과 — {result.get('iteration', '?')}회 완료 "
@@ -904,30 +1130,6 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
     if result.get("db_warning"):      st.warning(f"⚠️ {result['db_warning']}")
     if result.get("improvement_note"):st.info(f"📊 {result['improvement_note']}")
 
-    accuracy_history = result.get("accuracy_history", [])
-    if accuracy_history:
-        st.markdown("---")
-        st.subheader("📈 법규 준수율 개선 추이")
-        for h in accuracy_history:
-            iteration = h.get("iteration", 0)
-            accuracy = h.get("accuracy", 0)
-            violations = h.get("violations", 0)
-            status = h.get("status", "")
-            bar_filled = int(accuracy / 10)
-            bar = "█" * bar_filled + "░" * (10 - bar_filled)
-            if accuracy >= 80:
-                emoji = "🟢"
-            elif accuracy >= 60:
-                emoji = "🟡"
-            else:
-                emoji = "🔴"
-            is_post = h.get("is_post_edit", False)
-            label = "edit 후 최종" if is_post else f"iteration {iteration}"
-            st.markdown(
-                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
-                f"(위반 {violations}건, {status})"
-            )
-
     product_name = st.session_state.get("product_name", "보험상품")
     company      = st.session_state.get("insurance_company", "")
 
@@ -937,46 +1139,128 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
         content = result.get("content", "")
         highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
         st.markdown(highlighted, unsafe_allow_html=True)
-        if content:
-            st.download_button(
-                "⬇️ 약관 다운로드 (.docx)",
-                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
-                file_name=f"{company}_{product_name}_약관.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
         accuracy_history = result.get("accuracy_history", [])
         if accuracy_history:
             st.markdown("---")
-            st.subheader("📈 법규 준수율 개선 추이")
+            col_title, col_download = st.columns([3, 1])
+            with col_title:
+                st.subheader("📈 법규 준수율 개선 추이")
+            with col_download:
+                if content:
+                    st.download_button(
+                        "⬇️ 약관 다운로드 (.docx)",
+                        data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                        file_name=f"{company}_{product_name}_약관.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+            edit_count = 0
+            gen_above_50_count = 0
             for h in accuracy_history:
-                iteration  = h.get("iteration", 0)
+                is_post_edit = h.get("is_post_edit", False)
                 accuracy   = h.get("accuracy", 0)
+
+                if not is_post_edit and accuracy < 50.0:
+                    continue
+
                 violations = h.get("violations", 0)
                 h_status   = h.get("status", "")
                 bar_filled = int(accuracy / 10)
                 bar = "█" * bar_filled + "░" * (10 - bar_filled)
                 emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
-                label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+                if not is_post_edit:
+                    gen_above_50_count += 1
+                    label = f"🔄 iteration {gen_above_50_count}"
+                else:
+                    edit_count += 1
+                    label = f"✏️ edit {edit_count}회 후 검증"
                 st.markdown(
                     f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
                     f"(위반 {violations}건, {h_status})"
                 )
         return
 
-    # 항상 3탭 고정 (AI 생성 모드)
-    tab_clause, tab_desc, tab_biz = st.tabs(["📜 약관", "📋 상품설명서", "📁 사업방법서"])
+    content = result.get("content", "")
+    accuracy_history = result.get("accuracy_history", [])
+    if accuracy_history:
+        st.markdown("---")
+        col_title, col_download = st.columns([3, 1])
+        with col_title:
+            st.subheader("📈 법규 준수율 개선 추이")
+        with col_download:
+            if content:
+                st.download_button(
+                    "⬇️ 약관 다운로드 (.docx)",
+                    data=_to_docx_bytes(f"{company} {product_name} 약관", content),
+                    file_name=f"{company}_{product_name}_약관.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+        edit_count = 0
+        gen_above_50_count = 0
+        for h in accuracy_history:
+            is_post_edit = h.get("is_post_edit", False)
+            accuracy   = h.get("accuracy", 0)
+
+            if not is_post_edit and accuracy < 50.0:
+                continue
+
+            violations = h.get("violations", 0)
+            h_status   = h.get("status", "")
+            bar_filled = int(accuracy / 10)
+            bar = "█" * bar_filled + "░" * (10 - bar_filled)
+            emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
+            if not is_post_edit:
+                gen_above_50_count += 1
+                label = f"🔄 iteration {gen_above_50_count}"
+            else:
+                edit_count += 1
+                label = f"✏️ edit {edit_count}회 후 검증"
+            st.markdown(
+                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
+                f"(위반 {violations}건, {h_status})"
+            )
+        st.markdown("---")
+
+    # ── 텍스트 다운로드 버튼 (탭 위) ────────────────────────────────
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.download_button("📄 약관 다운로드", result.get("content", ""), file_name="약관.txt", mime="text/plain")
+    with col2:
+        st.download_button("📄 상품설명서 다운로드", result.get("product_description", ""), file_name="상품설명서.txt", mime="text/plain")
+    with col3:
+        st.download_button("📄 사업방법서 다운로드", result.get("business_method", ""), file_name="사업방법서.txt", mime="text/plain")
+
+    # ── 명확성 평가 실행 버튼 (탭 위) ───────────────────────────────
+    st.caption("생성된 문서에서 소비자가 불명확하게 해석할 수 있는 표현을 점검합니다.")
+    clarity_btn = st.button("🔍 명확성 평가 실행", use_container_width=True, key="clarity_eval_btn")
+    if clarity_btn:
+        docs = {
+            "약관": result.get("content", ""),
+            "상품설명서": result.get("product_description", ""),
+            "사업방법서": result.get("business_method", ""),
+        }
+        clarity_results = {}
+        for doc_type, doc_content in docs.items():
+            if doc_content:
+                with st.spinner(f"{doc_type} 명확성 평가 중..."):
+                    clarity_results[doc_type] = run_regulatory_risk_simulation(
+                        draft_content=doc_content,
+                        document_type=doc_type,
+                        selected_document_field=doc_type,
+                    )
+        st.session_state.regulatory_risk_result = clarity_results
+
+    # ── 6탭: 문서 3 + 명확성 평가 3 ─────────────────────────────────
+    clarity_results = st.session_state.get("regulatory_risk_result", {})
+    tab_clause, tab_desc, tab_biz, tab_cl1, tab_cl2, tab_cl3 = st.tabs([
+        "📄 약관", "📄 상품설명서", "📄 사업방법서",
+        "🔍 명확성:약관", "🔍 명확성:상품설명서", "🔍 명확성:사업방법서",
+    ])
 
     with tab_clause:
-        content = result.get("content", "")
-        highlighted = apply_violation_highlights(content, result.get("violations_for_ui", []))
+        highlighted = apply_violation_highlights(
+            result.get("content", ""), result.get("violations_for_ui", [])
+        )
         st.markdown(highlighted, unsafe_allow_html=True)
-        if content:
-            st.download_button(
-                "⬇️ 약관 다운로드 (.docx)",
-                data=_to_docx_bytes(f"{company} {product_name} 약관", content),
-                file_name=f"{company}_{product_name}_약관.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
 
     with tab_desc:
         desc = result.get("product_description", "")
@@ -1000,23 +1284,12 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
-    accuracy_history = result.get("accuracy_history", [])
-    if accuracy_history:
-        st.markdown("---")
-        st.subheader("📈 법규 준수율 개선 추이")
-        for h in accuracy_history:
-            iteration  = h.get("iteration", 0)
-            accuracy   = h.get("accuracy", 0)
-            violations = h.get("violations", 0)
-            h_status   = h.get("status", "")
-            bar_filled = int(accuracy / 10)
-            bar = "█" * bar_filled + "░" * (10 - bar_filled)
-            emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
-            label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
-            st.markdown(
-                f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
-                f"(위반 {violations}건, {h_status})"
-            )
+    for tab, doc_type in zip([tab_cl1, tab_cl2, tab_cl3], ["약관", "상품설명서", "사업방법서"]):
+        with tab:
+            if clarity_results and doc_type in clarity_results:
+                render_regulatory_risk_result(clarity_results[doc_type])
+            else:
+                st.info("위쪽 '🔍 명확성 평가 실행' 버튼을 클릭하면 평가 결과가 여기에 표시됩니다.")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -1243,6 +1516,7 @@ with col_result:
                 st.session_state.generation_result = result
                 st.session_state.generation_model  = model_used
                 st.session_state.generation_show_all_docs = not revise_btn
+                st.session_state.regulatory_risk_result = None
 
             except requests.exceptions.HTTPError as e:
                 st.error(f"오류 발생: {e}")

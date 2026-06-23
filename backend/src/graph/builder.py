@@ -49,7 +49,8 @@ def build_graph(model_override: Optional[str] = None):
     graph.add_node("generation",       _generation)
     graph.add_node("compliance",       _compliance)
     graph.add_node("edit",             _edit)
-    graph.add_node("final_validation", lambda s: final_validation_node(s, model_override))
+    async def _final_validation(s): return await final_validation_node(s, model_override)
+    graph.add_node("final_validation", _final_validation)
     graph.add_node("revise",           _revise)
 
     # 진입점 → coordinator → planner → supervisor(허브)
@@ -74,7 +75,7 @@ def build_graph(model_override: Optional[str] = None):
     # 각 노드 완료 후 supervisor로 귀환
     graph.add_edge("generation",       "supervisor")
     graph.add_edge("compliance",       "supervisor")
-    graph.add_edge("edit",             "final_validation")
+    graph.add_edge("edit",             "supervisor")
     graph.add_edge("final_validation", "supervisor")
     graph.add_edge("revise",           "supervisor")
 
