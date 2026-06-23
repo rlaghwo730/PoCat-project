@@ -30,6 +30,7 @@ from ..agents.agents import get_coordinator_llm, get_planner_llm, get_supervisor
 # 기존 라우팅(builder.py의 edge)은 그대로 두고, 노드 간 전달 내용을
 # 표준 A2A 메시지로 기록하기 위한 helper. 실행 흐름에는 영향을 주지 않는다.
 from ..A2A import create_a2a_message, append_a2a_message, A2AStatus
+from ..tools.risk_dictionary_detector import detect_compliance_risks
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +410,10 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
     ]
 
     try:
+        risk_result = await asyncio.to_thread(
+            detect_compliance_risks,
+            state.get("draft_content", ""),
+        )
         report = None
         reports = await asyncio.gather(
             *(agent.validate_async(item) for _, item in detection_inputs)
@@ -451,6 +456,7 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             ) / total_length
         else:
             compliance_score = 0.0
+        risk_summary = risk_result.get("summary", {})
 
         next_actions = [report.next_action for report in reports if report.next_action]
         if any(a.startswith("GENERATOR_FAILURE") for a in next_actions):
@@ -514,6 +520,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         )
         return {
             "violations":               violations,
+            "dictionary_findings":      risk_result.get("dictionary_findings", []),
+            "semantic_findings":        risk_result.get("semantic_findings", []),
+            "risk_dictionary_summary":  risk_summary,
             "status":                   status,
             "compliance_next_action":   compliance_next_action,
             "compliance_score":         round(compliance_score, 4),
@@ -538,6 +547,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.error("[compliance] 검증 실패: %s", e)
         return {
             "violations":               [],
+            "dictionary_findings":      [],
+            "semantic_findings":        [],
+            "risk_dictionary_summary":  {},
             "status":                   "ERROR",
             "compliance_next_action":   "ERROR",
             "compliance_score":         0.0,

@@ -119,6 +119,9 @@ def _build_result(result: dict, db_warning: Optional[str]) -> dict:
         "db_warning":          db_warning,
         "accuracy_history":    result.get("accuracy_history", []),
         "current_accuracy":    float(result.get("current_accuracy", 0.0)),
+        "dictionary_findings": result.get("dictionary_findings", []),
+        "semantic_findings":   result.get("semantic_findings", []),
+        "risk_dictionary_summary": result.get("risk_dictionary_summary", {}),
     }
 
 
@@ -150,6 +153,9 @@ def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> 
         "current_accuracy":         0.0,
         "accuracy_history":         [],
         "edit_iteration":           0,
+        "dictionary_findings":      [],
+        "semantic_findings":        [],
+        "risk_dictionary_summary":  {},
     }
 
 

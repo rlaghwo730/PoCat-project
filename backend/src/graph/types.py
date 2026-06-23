@@ -1,4 +1,4 @@
-from typing import TypedDict, Optional
+from typing import TypedDict
 
 
 class State(TypedDict):
@@ -27,3 +27,8 @@ class State(TypedDict):
     # 별도의 LangGraph 리듀서(Annotated) 어노테이션이 필요 없다.
     edit_iteration: int                # edit 반복 횟수
     a2a_messages: list[dict]          # A2A 메시지 목록 (관찰/로깅용)
+
+    # ── 규제 위험 사전 탐지 (clarity-assessment) ────────────────────────────
+    dictionary_findings: list
+    semantic_findings: list
+    risk_dictionary_summary: dict
