@@ -312,7 +312,10 @@ async def generation_node(state: State, model_override: Optional[str] = None) ->
                 for v in sorted_violations[:5]
             ]
             feedback = {"priority_fixes": priority_fixes}
-            result = await asyncio.to_thread(agent.regenerate, request, feedback, iteration + 1)
+            result = await asyncio.to_thread(
+                agent.regenerate, request, feedback, iteration + 1,
+                state.get("draft_content", "")
+            )
 
         new_iter = iteration + 1
         logger.info("[generation] iteration=%d model=%s 완료", new_iter, model_override or "default")
@@ -477,14 +480,16 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         logger.info("[compliance] status=%s violations=%d accuracy=%.1f%%", status, len(violations), accuracy)
 
         history = state.get("accuracy_history", [])
-        history = history + [{
-            "iteration":  state.get("iteration", 0),
-            "accuracy":   accuracy,
-            "violations": len(violations),
-            "status":     status,
-        }]
-
         is_post_edit = bool(state.get("final_content") or state.get("product_description"))
+        history = history + [{
+            "iteration":      state.get("iteration", 0),
+            "accuracy":       accuracy,
+            "violations":     len(violations),
+            "status":         status,
+            "is_post_edit":   is_post_edit,
+            "step_type":      "edit_review" if is_post_edit else "generation",
+            "edit_iteration": state.get("edit_iteration", 0),
+        }]
         # 90% 이상이거나 위반 0건일 때만 최종 완료
         post_edit_done = is_post_edit and (accuracy >= 90.0 or len(violations) == 0)
         # ── A2A: compliance → supervisor (검증 결과 보고, 다음 분기는 supervisor가 결정) ──

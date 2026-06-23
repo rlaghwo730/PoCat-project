@@ -696,7 +696,7 @@ class GenerationAgent:
         ])
         return response.content
 
-    def regenerate(self, request: dict, feedback: dict, iteration: int) -> dict:
+    def regenerate(self, request: dict, feedback: dict, iteration: int, previous_draft: str = "") -> dict:
         """법규 위반 피드백 기반 약관 재생성."""
         model_override = request.get("model")
         llm = self._get_llm(model_override)
@@ -710,9 +710,18 @@ class GenerationAgent:
         base_prompt = self._build_clause_prompt(request, context, legal_context)
 
         fixes_text = "\n".join(f"- {fix}" for fix in priority_fixes)
+        previous_section = ""
+        if previous_draft:
+            previous_section = (
+                f"\n\n## 이전 약관 초안\n"
+                f"아래 약관을 기반으로 위반 항목만 최소한으로 수정하세요.\n"
+                f"위반이 없는 조항은 절대 변경하지 마세요:\n\n"
+                f"{previous_draft[:3000]}\n"
+            )
         regeneration_section = (
-            f"\n\n## 법규 준수 검토 피드백 (초안 #{iteration - 1} 검토 결과)\n"
-            f"아래 항목을 반드시 수정하여 약관을 재작성하세요:\n{fixes_text}\n"
+            f"{previous_section}"
+            f"\n\n## 법규 준수 검토 피드백\n"
+            f"아래 위반 항목만 수정하세요. 위반이 없는 조항은 절대 변경하지 마세요:\n{fixes_text}\n"
         )
 
         response = llm.invoke([

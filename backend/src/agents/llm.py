@@ -29,14 +29,17 @@ def get_llm_by_type(llm_type: str, model_override: Optional[str] = None):
         from langchain_openai import ChatOpenAI
         model = model_override or _MODEL_MAP.get(llm_type, _MODEL_MAP["basic"])
         logger.info("[LLM] OpenRouter 사용: %s", model)
-        primary = (
-            ChatOpenAI(
-                model=model,
-                api_key=openrouter_key,
-                base_url="https://openrouter.ai/api/v1",
-            )
-            .with_retry(stop_after_attempt=3)
-        )
+        temperature_map = {
+            "generation": 0.3,
+            "compliance": 0.1,
+        }
+        temperature = temperature_map.get(llm_type, 0.5)
+        primary = ChatOpenAI(
+            model=model,
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+            temperature=temperature,
+        ).with_retry(stop_after_attempt=3)
         if upstage_llm:
             logger.info("[LLM] Upstage Solar 폴백 등록")
             return (

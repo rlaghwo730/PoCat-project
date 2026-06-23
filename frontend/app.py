@@ -926,15 +926,26 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                         file_name=f"{company}_{product_name}_약관.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     )
+            edit_count = 0
+            gen_above_50_count = 0
             for h in accuracy_history:
-                iteration  = h.get("iteration", 0)
+                is_post_edit = h.get("is_post_edit", False)
                 accuracy   = h.get("accuracy", 0)
+
+                if not is_post_edit and accuracy < 50.0:
+                    continue
+
                 violations = h.get("violations", 0)
                 h_status   = h.get("status", "")
                 bar_filled = int(accuracy / 10)
                 bar = "█" * bar_filled + "░" * (10 - bar_filled)
                 emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
-                label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+                if not is_post_edit:
+                    gen_above_50_count += 1
+                    label = f"🔄 iteration {gen_above_50_count}"
+                else:
+                    edit_count += 1
+                    label = f"✏️ edit {edit_count}회 후 검증"
                 st.markdown(
                     f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
                     f"(위반 {violations}건, {h_status})"
@@ -956,15 +967,26 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                     file_name=f"{company}_{product_name}_약관.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+        edit_count = 0
+        gen_above_50_count = 0
         for h in accuracy_history:
-            iteration  = h.get("iteration", 0)
+            is_post_edit = h.get("is_post_edit", False)
             accuracy   = h.get("accuracy", 0)
+
+            if not is_post_edit and accuracy < 50.0:
+                continue
+
             violations = h.get("violations", 0)
             h_status   = h.get("status", "")
             bar_filled = int(accuracy / 10)
             bar = "█" * bar_filled + "░" * (10 - bar_filled)
             emoji = "🟢" if accuracy >= 80 else ("🟡" if accuracy >= 60 else "🔴")
-            label = "edit 후 최종" if h.get("is_post_edit") else f"iteration {iteration}"
+            if not is_post_edit:
+                gen_above_50_count += 1
+                label = f"🔄 iteration {gen_above_50_count}"
+            else:
+                edit_count += 1
+                label = f"✏️ edit {edit_count}회 후 검증"
             st.markdown(
                 f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
                 f"(위반 {violations}건, {h_status})"
