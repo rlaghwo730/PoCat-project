@@ -468,19 +468,27 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
                     type(report).__name__ if report else 'None',
                     getattr(report, 'compliance_score', 'N/A'))
 
-        raw_score = getattr(report, 'compliance_score', None) if report else None
-        logger.info("[compliance] raw_score 값: %s", raw_score)
-        if raw_score is not None and raw_score > 0:
+        raw_score = compliance_score  # 가중평균 사용 (reports[0] 아님)
+        if raw_score > 0:
             accuracy = round(float(raw_score) * 100, 1)
         elif raw_score == 0 and len(violations) == 0:
             accuracy = 100.0
         else:
-            accuracy = round(float(raw_score) * 100, 1) if raw_score else 0.0
+            accuracy = 0.0
 
         logger.info("[compliance] status=%s violations=%d accuracy=%.1f%%", status, len(violations), accuracy)
 
-        history = state.get("accuracy_history", [])
         is_post_edit = bool(state.get("final_content") or state.get("product_description"))
+
+        # edit 후 준수율이 이전보다 낮아지면 이전 버전 복원
+        prev_accuracy = state.get("current_accuracy", 0.0)
+        if is_post_edit and accuracy < prev_accuracy:
+            logger.warning("[compliance] 준수율 하락 감지 (%.1f%% → %.1f%%), 이전 버전 복원", prev_accuracy, accuracy)
+            # final_content를 이전 상태로 되돌림 (state 반환에서 처리)
+            accuracy = prev_accuracy
+            violations = state.get("violations", violations)  # 이전 violations 유지
+
+        history = state.get("accuracy_history", [])
         history = history + [{
             "iteration":      state.get("iteration", 0),
             "accuracy":       accuracy,
@@ -582,15 +590,39 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
                 ),
                 timeout=180.0,
             )
-            final_content = response.content
+            raw = response.content.strip()
+            import json, re
+            match = re.search(r'\[.*\]', raw, re.DOTALL)
+            if match:
+                try:
+                    patches = json.loads(match.group())
+                    final_content = draft
+                    for patch in patches:
+                        orig = patch.get("original", "")
+                        fixed = patch.get("fixed", "")
+                        if orig and fixed:
+                            final_content = final_content.replace(orig, fixed, 1)
+                except Exception:
+                    final_content = draft  # 파싱 실패 시 원본 유지
+            else:
+                final_content = draft  # JSON 없으면 원본 유지
         else:
             final_content = draft
 
         # ── Step 2: 상품설명서 + 사업방법서 동시 생성 ────────────────────────
         # generate_product_description이 이제 dict {"product_description", "business_method"} 반환
-        generated_docs = await agent.generate_product_description_parallel(final_content, state["request"])
-
-        logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
+        # edit 1회차에만 생성, 이후에는 기존 문서 유지
+        if state.get("edit_iteration", 0) == 0:
+            generated_docs = await agent.generate_product_description_parallel(final_content, state["request"])
+            product_description = generated_docs["product_description"]
+            business_method = generated_docs["business_method"]
+            logger.info("[edit] 사업방법서 길이: %d", len(business_method))
+            logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 생성 완료", len(violations))
+        else:
+            product_description = state.get("product_description", "")
+            business_method = state.get("business_method", "")
+            logger.info("[edit] 사업방법서 기존 유지 길이: %d", len(business_method))
+            logger.info("[edit] 부분 수정 완료 violations=%d + 상품설명서·사업방법서 기존 유지", len(violations))
         # ── A2A: edit → supervisor (3종 문서 완성 보고, 최종 검증/종료는 supervisor가 결정) ──
         a2a_msg = create_a2a_message(
             sender="edit", receiver="supervisor",
@@ -601,8 +633,8 @@ async def edit_node(state: State, model_override: Optional[str] = None) -> dict:
         )
         return {
             "final_content":       final_content,
-            "product_description": generated_docs["product_description"],
-            "business_method":     generated_docs["business_method"],
+            "product_description": product_description,
+            "business_method":     business_method,
             "messages": state["messages"] + [
                 {
                     "role": "edit",
