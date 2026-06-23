@@ -149,6 +149,7 @@ def _initial_state(request: dict, langfuse_callbacks: Optional[list] = None) -> 
         "document_compliance_scores": {},
         "current_accuracy":         0.0,
         "accuracy_history":         [],
+        "edit_iteration":           0,
     }
 
 
@@ -198,6 +199,7 @@ async def run_workflow(request: dict) -> dict:
                 config = {"callbacks": [langfuse_handler]}
 
                 graph = build_graph(model_override=model_override)
+                config["recursion_limit"] = 50
                 result = await graph.ainvoke(
                     _initial_state(request, [langfuse_handler]),
                     config=config,
@@ -278,6 +280,7 @@ async def stream_workflow(request: dict) -> AsyncGenerator[str, None]:
                 config = {"callbacks": [langfuse_handler]}
 
                 graph = build_graph(model_override=model_override)
+                config["recursion_limit"] = 50
                 async for snapshot in graph.astream(
                     _initial_state(request, [langfuse_handler]),
                     stream_mode="values",

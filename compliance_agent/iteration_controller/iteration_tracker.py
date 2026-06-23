@@ -54,12 +54,5 @@ class IterationTracker:
         return len(self.consecutive_violation_ids()) > 0
 
     def has_hard_loop(self) -> bool:
-        """
-        위반 수가 이전보다 늘어났을 때만 HARD_LOOP.
-        위반 ID 비교 제거 - 단순 위반 수 증가만 체크.
-        """
-        if len(self._history) < 2:
-            return False
-        prev_count = len(self._history[-2])
-        curr_count = len(self._history[-1])
-        return curr_count > prev_count
+        """HARD_LOOP 비활성화 — 항상 MAX_ITERATIONS까지 실행."""
+        return False

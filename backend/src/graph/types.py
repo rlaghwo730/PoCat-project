@@ -25,4 +25,5 @@ class State(TypedDict):
     # 노드 간 전달 내용을 표준 메시지로 누적 기록하는 로그성 필드.
     # 기존 messages 와 동일하게 '전체 리스트 통째 반환' 방식으로 갱신하므로
     # 별도의 LangGraph 리듀서(Annotated) 어노테이션이 필요 없다.
+    edit_iteration: int                # edit 반복 횟수
     a2a_messages: list[dict]          # A2A 메시지 목록 (관찰/로깅용)

@@ -75,7 +75,7 @@ def build_graph(model_override: Optional[str] = None):
     # 각 노드 완료 후 supervisor로 귀환
     graph.add_edge("generation",       "supervisor")
     graph.add_edge("compliance",       "supervisor")
-    graph.add_edge("edit",             "final_validation")
+    graph.add_edge("edit",             "supervisor")
     graph.add_edge("final_validation", "supervisor")
     graph.add_edge("revise",           "supervisor")
 
