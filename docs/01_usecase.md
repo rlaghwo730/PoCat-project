@@ -12,7 +12,7 @@
 |------|------|
 | **보험사 담당자** | 약관 생성 요청을 발행하고 결과를 검토하는 1차 사용자. Streamlit UI를 통해 상품 조건 입력 |
 | **AI 에이전트 시스템** | LangGraph 워크플로우 상의 7개 노드(coordinator/planner/supervisor/generation/compliance/edit/final_validation). 각 노드가 독립적인 에이전트 역할을 수행 |
-| **외부 LLM (OpenRouter)** | `openai/gpt-oss-120b:free` 모델을 기본으로 사용. Upstage Solar-Pro가 폴백(fallback)으로 등록됨 |
+| **외부 LLM (OpenRouter)** | 노드별 모델 사용 — basic/reasoning: `meta-llama/llama-3.2-3b-instruct:free`, supervisor: `openai/gpt-oss-120b:free`, generation: `qwen/qwen3-235b-a22b:free`, edit: `qwen/qwen-2.5-72b-instruct:free`, compliance: `nousresearch/hermes-3-llama-3.1-405b:free`. Upstage Solar-Pro가 폴백(fallback)으로 등록됨 |
 | **ChromaDB (RAG)** | 삼성화재·현대해상·DB손해보험 실제 약관·상품설명서·사업방법서 벡터 저장소 |
 | **pgvector DB** | `unified_retrieval_chunk` 등 법률/보험업감독규정 텍스트 저장소 |
 | **Langfuse** | LLM 호출 트레이싱 및 관찰성 수집 외부 서비스 |

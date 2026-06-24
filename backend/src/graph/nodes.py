@@ -415,9 +415,16 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             state.get("draft_content", ""),
         )
         report = None
-        reports = await asyncio.gather(
-            *(agent.validate_async(item) for _, item in detection_inputs)
+        raw_reports = await asyncio.gather(
+            *(agent.validate_async(item) for _, item in detection_inputs),
+            return_exceptions=True
         )
+        valid_pairs = [
+            (di, r) for di, r in zip(detection_inputs, raw_reports)
+            if not isinstance(r, Exception)
+        ]
+        detection_inputs = [di for di, _ in valid_pairs]
+        reports = [r for _, r in valid_pairs]
         report = reports[0] if reports else None
 
         violations = [
@@ -736,9 +743,12 @@ async def revise_node(state: State, model_override: Optional[str] = None) -> dic
 
     try:
         edit_prompt = _build_fix_prompt(draft, violations)
-        response = await llm.ainvoke(
-            [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
-            config={"callbacks": state.get("langfuse_callbacks", [])},
+        response = await asyncio.wait_for(
+            llm.ainvoke(
+                [SystemMessage(content=_prompt("edit")), HumanMessage(content=edit_prompt)],
+                config={"callbacks": state.get("langfuse_callbacks", [])},
+            ),
+            timeout=180.0,
         )
         logger.info("[revise] 수정 완료 violations=%d", len(violations))
         return {

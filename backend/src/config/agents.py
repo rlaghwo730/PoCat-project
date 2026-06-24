@@ -4,5 +4,5 @@ AGENT_LLM_MAP = {
     "supervisor":  "basic",
     "generation":  "generation",
     "compliance":  "compliance",
-    "edit":        "basic",
+    "edit":        "edit",
 }

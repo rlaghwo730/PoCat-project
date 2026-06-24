@@ -262,6 +262,50 @@ data: [DONE]
 
 ---
 
+### 2.4 POST /regulatory-risk-simulation
+
+**설명**: 약관 초안에 대한 규제 리스크 시뮬레이션을 수행하고, 잠재적 법규 위반 가능성과 안전한 대안을 반환한다.
+
+#### Request 스키마
+
+```json
+{
+  "draft_content": "제1관(일반사항 및 용어의 정의)...",
+  "document_type": "약관",
+  "selected_document_field": "상해급여실손"
+}
+```
+
+**필드 설명**
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `draft_content` | string | ✅ | 시뮬레이션 대상 약관 초안 |
+| `document_type` | string | ✅ | 문서 유형 (약관 / 상품설명서 / 사업방법서) |
+| `selected_document_field` | string | ✅ | 분석 대상 문서 항목 |
+
+#### Response 스키마 (HTTP 200)
+
+```json
+{
+  "regulatory_risk_simulation_findings": [...],
+  "regulatory_risk_simulation_summary": {...},
+  "regulatory_risk_simulation_report": "...",
+  "safe_alternative_report": "..."
+}
+```
+
+**응답 필드 설명**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `regulatory_risk_simulation_findings` | array | 발견된 규제 리스크 항목 목록 |
+| `regulatory_risk_simulation_summary` | object | 시뮬레이션 결과 요약 |
+| `regulatory_risk_simulation_report` | string | 규제 리스크 전체 리포트 |
+| `safe_alternative_report` | string | 안전한 대안 표현 리포트 |
+
+---
+
 ## 3. Pydantic 모델 상세
 
 ### ViolationUI
