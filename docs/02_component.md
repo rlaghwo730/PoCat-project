@@ -117,7 +117,7 @@ START → coordinator → planner → supervisor
 supervisor --(조건부)-→ generation | compliance | edit | final_validation | revise | END
 generation    → supervisor
 compliance    → supervisor
-edit          → final_validation   (direct edge, supervisor 우회)
+edit          → supervisor → final_validation   (supervisor 조건부 라우팅 경유)
 final_validation → supervisor
 revise        → supervisor
 ```
@@ -264,9 +264,12 @@ return (
 
 | 유형 | 모델 |
 |------|------|
-| `basic` | `openai/gpt-oss-120b:free` |
-| `reasoning` | `openai/gpt-oss-120b:free` |
+| `basic` | `meta-llama/llama-3.2-3b-instruct:free` |
+| `reasoning` | `meta-llama/llama-3.2-3b-instruct:free` |
 | `supervisor` | `openai/gpt-oss-120b:free` |
+| `generation` | `qwen/qwen3-235b-a22b:free` |
+| `edit` | `qwen/qwen-2.5-72b-instruct:free` |
+| `compliance` | `nousresearch/hermes-3-llama-3.1-405b:free` |
 
 ---
 

@@ -10,6 +10,12 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   frontend:
     build:
@@ -24,5 +30,6 @@ services:
     ports:
       - "8501:8501"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped

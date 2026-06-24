@@ -77,7 +77,9 @@ sequenceDiagram
     LLM-->>EDIT: 상품설명서
     EDIT->>LLM: invoke(biz_method_prompt)
     LLM-->>EDIT: 사업방법서
-    EDIT-->>FV: direct edge (supervisor 우회)<br/>final_content, product_description, business_method
+    EDIT-->>SUP: final_content, product_description, business_method
+    Note over SUP: last_role=edit, post_edit_done=True<br/>→ next_step=final_validation (supervisor 조건부 라우팅 경유)
+    SUP->>FV: route_supervisor() → "final_validation"
 
     FV->>LLM: arun_final_validation()<br/>(3종 문서 최종 검증)
     LLM-->>FV: passed=True, summary="최종 검증 완료"
@@ -153,7 +155,9 @@ sequenceDiagram
     LLM-->>EDIT: 상품설명서
     EDIT->>LLM: invoke(biz_method_prompt)
     LLM-->>EDIT: 사업방법서
-    EDIT-->>FV: direct edge<br/>final_content, product_description, business_method
+    EDIT-->>SUP: final_content, product_description, business_method
+    Note over SUP: last_role=edit, post_edit_done=True<br/>→ next_step=final_validation (supervisor 조건부 라우팅 경유)
+    SUP->>FV: route_supervisor() → "final_validation"
 
     FV->>LLM: arun_final_validation()
     LLM-->>FV: passed=True

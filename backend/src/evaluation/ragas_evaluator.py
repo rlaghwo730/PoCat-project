@@ -140,27 +140,11 @@ def build_eval_records(test_rows: list[dict]) -> list[dict]:
 def _load_metrics() -> list:
     """RAGAS 지표 4종 로드.
 
-    ⚠️ RAGAS 버전에 따라 import 경로/이름이 다를 수 있습니다.
-       ImportError 가 나면 아래 후보 중 설치된 버전에 맞게 조정하세요.
-
-       - 0.1.x / 0.2.x:
-           from ragas.metrics import (
-               faithfulness, answer_relevancy,
-               context_precision, context_recall,
-           )
-       - 일부 버전은 클래스형으로 제공:
-           from ragas.metrics import (
-               Faithfulness, ResponseRelevancy,
-               LLMContextPrecisionWithReference, LLMContextRecall,
-           )
-         이 경우 인스턴스화해서 사용: [Faithfulness(), ResponseRelevancy(), ...]
+    ragas.metrics 모듈 싱글톤을 사용한다. evaluate()가 MetricWithLLM/MetricWithEmbeddings
+    인터페이스를 통해 llm·embeddings를 주입하므로, 여기서는 객체만 반환한다.
+    (ragas.metrics.collections 는 evaluate()의 Metric isinstance 체크를 통과하지 못함)
     """
-    from ragas.metrics import (  # noqa: F401
-        faithfulness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-    )
+    from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
     return [faithfulness, answer_relevancy, context_precision, context_recall]
 
 
@@ -206,16 +190,44 @@ def _to_ragas_dataset(records: list[dict]):
 def evaluate_records(records: list[dict]):
     """RAGAS evaluate() 실행 후 결과 객체 반환.
 
-    LLM/임베딩 자격증명은 RAGAS 가 환경변수(OPENAI_API_KEY 등)에서 읽는다.
-    (이 스크립트는 키를 코드에 넣지 않는다.)
+    OPENROUTER_API_KEY(LLM) + UPSTAGE_API_KEY(임베딩)로 평가 모델을 구성한다.
     """
     from ragas import evaluate
+
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    upstage_key = os.getenv("UPSTAGE_API_KEY")
+
+    # ── 평가용 LLM — evaluate()가 LangchainLLM을 자동으로 LangchainLLMWrapper로 감쌈
+    if openrouter_key:
+        from langchain_openai import ChatOpenAI
+        ragas_llm = ChatOpenAI(
+            model="openai/gpt-oss-120b:free",
+            api_key=openrouter_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+    elif upstage_key:
+        from langchain_upstage import ChatUpstage
+        ragas_llm = ChatUpstage(model="solar-pro", api_key=upstage_key)
+    else:
+        raise ValueError("OPENROUTER_API_KEY 또는 UPSTAGE_API_KEY가 필요합니다.")
+
+    # ── 평가용 임베딩 — evaluate()가 LangchainEmbeddings를 자동으로 Wrapper로 감쌈
+    ragas_embeddings = None
+    if upstage_key:
+        from langchain_upstage import UpstageEmbeddings
+        ragas_embeddings = UpstageEmbeddings(
+            api_key=upstage_key,
+            model="solar-embedding-1-large-query",
+        )
 
     metrics = _load_metrics()
     dataset = _to_ragas_dataset(records)
 
     logger.info("[ragas] evaluate() 실행 — 지표 %d종", len(metrics))
-    result = evaluate(dataset=dataset, metrics=metrics)
+    kwargs: dict = {"dataset": dataset, "metrics": metrics, "llm": ragas_llm}
+    if ragas_embeddings:
+        kwargs["embeddings"] = ragas_embeddings
+    result = evaluate(**kwargs)
     return result
 
 
