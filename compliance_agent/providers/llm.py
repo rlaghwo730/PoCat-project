@@ -2,7 +2,7 @@
 
 선택 규칙:
   1. GEMINI_API_KEY가 있으면 Gemini 모델
-     (기본: gemini-3.5-flash, GEMINI_COMPLIANCE_MODEL로 변경 가능)
+     (기본: gemini-2.5-flash, GEMINI_COMPLIANCE_MODEL로 변경 가능)
   2. OPENROUTER_API_KEY와 model_override가 모두 있으면 선택한 OpenRouter 모델
      (최대 3회 재시도, Upstage가 있으면 런타임 폴백)
   3. UPSTAGE_API_KEY가 있으면 Upstage solar-pro (최대 3회 재시도)
@@ -20,7 +20,7 @@ from typing import Any, Optional
 from langchain_core.messages import AIMessage, SystemMessage
 
 
-_DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 
 class GeminiComplianceLLM:

@@ -23,8 +23,10 @@ RAG + LangManus(LangGraph) 기반 실손의료보험 약관/상품설명서/사�
 
 | 구분 | 기술 |
 |---|---|
-| LLM | OpenRouter (llama-3.1-8b:free / claude-3.5-sonnet / gpt-4o) |
-| Fallback LLM | Upstage Solar (solar-pro) |
+| LLM (생성) | qwen/qwen3-235b-a22b:free (OpenRouter) |
+| LLM (편집) | qwen/qwen-2.5-72b-instruct:free (OpenRouter) |
+| LLM (라우팅) | Upstage Solar-Pro (coordinator · planner · supervisor) |
+| LLM (검증) | Gemini 2.5 Flash (compliance) |
 | 에이전트 프레임워크 | LangGraph (StateGraph) |
 | RAG | ChromaDB + LangChain |
 | 임베딩 | Upstage Solar Embedding |
@@ -58,12 +60,12 @@ coordinator → planner → supervisor
 
 | 에이전트 | LLM 타입 | 역할 |
 |---|---|---|
-| coordinator | basic | 요청 분석 및 라우팅 |
-| planner | basic | 작업 전략 수립 |
-| supervisor | supervisor (gpt-4o) | 에이전트 조율 · CONTINUE/STOP 판단 |
-| generation | basic | RAG + DB 참조하여 약관 초안 생성 |
-| compliance | basic | 5가지 위반 유형 탐지 |
-| edit | basic | 위반 항목만 부분 수정 |
+| coordinator | Upstage Solar-Pro | 요청 분석 및 라우팅 |
+| planner | Upstage Solar-Pro | 작업 전략 수립 |
+| supervisor | Upstage Solar-Pro | 에이전트 조율 · CONTINUE/STOP 판단 |
+| generation | qwen/qwen3-235b-a22b:free | RAG + DB 참조하여 약관 초안 생성 |
+| compliance | Gemini 2.5 Flash | 5가지 위반 유형 탐지 |
+| edit | qwen/qwen-2.5-72b-instruct:free | 위반 항목만 부분 수정 |
 
 ## 📊 데이터베이스 구성
 
@@ -95,7 +97,7 @@ pip install -r backend/requirements.txt
 ### 3. 환경변수 설정 (.env 파일)
 ```
 GEMINI_API_KEY=your_key          # Compliance Agent LLM
-GEMINI_COMPLIANCE_MODEL=gemini-3.5-flash
+GEMINI_COMPLIANCE_MODEL=gemini-2.5-flash
 OPENROUTER_API_KEY=your_key      # 생성/편집/슈퍼바이저 LLM
 UPSTAGE_API_KEY=your_key         # 임베딩 및 fallback
 LANGFUSE_PUBLIC_KEY=your_key

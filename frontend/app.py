@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import time
 from uuid import uuid4
 
 import requests
@@ -1177,6 +1178,11 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                     f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
                     f"(위반 {violations}건, {h_status})"
                 )
+            if st.session_state.get("generation_start_time") and st.session_state.get("generation_end_time"):
+                elapsed = st.session_state.generation_end_time - st.session_state.generation_start_time
+                minutes = int(elapsed // 60)
+                seconds = int(elapsed % 60)
+                st.caption(f"⏱️ 총 소요시간: {minutes}분 {seconds}초")
         return
 
     content = result.get("content", "")
@@ -1218,6 +1224,11 @@ def render_result_panel(result: dict, model_label: str, show_all_docs: bool = Tr
                 f"**{label}**: {emoji} `{bar}` **{accuracy}%** "
                 f"(위반 {violations}건, {h_status})"
             )
+        if st.session_state.get("generation_start_time") and st.session_state.get("generation_end_time"):
+            elapsed = st.session_state.generation_end_time - st.session_state.generation_start_time
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            st.caption(f"⏱️ 총 소요시간: {minutes}분 {seconds}초")
         st.markdown("---")
 
     # ── 텍스트 다운로드 버튼 (탭 위) ────────────────────────────────
@@ -1395,6 +1406,7 @@ with col_result:
                 if revise_btn:
                     with st.status("약관 검증·수정 중...", expanded=True) as status_box:
                         request = build_revise_request(model=None)
+                        st.session_state.generation_start_time = time.time()
                         response = requests.post(
                             f"{BACKEND_URL}/generate/stream",
                             json=request, stream=True, timeout=300,
@@ -1427,9 +1439,11 @@ with col_result:
                             raise Exception("결과를 받지 못했습니다.")
                         model_used = result.get("model_used", "Upstage Solar")
                         st.write(f"✅ 검증·수정 완료: {model_used}")
+                        st.session_state.generation_end_time = time.time()
                 elif generate_btn:
                     with st.status("초안 생성 중...", expanded=True) as status_box:
                         request = build_request(model=None)
+                        st.session_state.generation_start_time = time.time()
                         response = requests.post(
                             f"{BACKEND_URL}/generate/stream",
                             json=request, stream=True, timeout=300,
@@ -1462,9 +1476,11 @@ with col_result:
                             raise Exception("결과를 받지 못했습니다.")
                         model_used = result.get("model_used", "Upstage Solar")
                         st.write(f"✅ 생성 완료: {model_used}")
+                        st.session_state.generation_end_time = time.time()
                 else:
                     with st.status("최종 실행 중...", expanded=True) as status_box:
                         request = build_request(model=None)
+                        st.session_state.generation_start_time = time.time()
                         response = requests.post(
                             f"{BACKEND_URL}/generate/stream",
                             json=request, stream=True, timeout=300,
@@ -1497,6 +1513,7 @@ with col_result:
                             raise Exception("결과를 받지 못했습니다.")
                         model_used = result.get("model_used", "에이전트별 최적 모델")
                         st.write(f"✅ 최종 실행 완료: {model_used}")
+                        st.session_state.generation_end_time = time.time()
 
                 final_status = result.get("status", "")
                 action_word = "검토" if revise_btn else "재생성"
