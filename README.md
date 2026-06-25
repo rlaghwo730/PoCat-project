@@ -94,8 +94,10 @@ pip install -r backend/requirements.txt
 
 ### 3. 환경변수 설정 (.env 파일)
 ```
-OPENROUTER_API_KEY=your_key      # 필수 (LLM)
-UPSTAGE_API_KEY=your_key         # 필수 (임베딩)
+GEMINI_API_KEY=your_key          # Compliance Agent LLM
+GEMINI_COMPLIANCE_MODEL=gemini-3.5-flash
+OPENROUTER_API_KEY=your_key      # 생성/편집/슈퍼바이저 LLM
+UPSTAGE_API_KEY=your_key         # 임베딩 및 fallback
 LANGFUSE_PUBLIC_KEY=your_key
 LANGFUSE_SECRET_KEY=your_key
 LANGFUSE_HOST=https://cloud.langfuse.com

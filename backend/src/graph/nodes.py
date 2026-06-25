@@ -419,6 +419,17 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             *(agent.validate_async(item) for _, item in detection_inputs),
             return_exceptions=True
         )
+        failed_pairs = [
+            (di, exc) for di, exc in zip(detection_inputs, raw_reports)
+            if isinstance(exc, Exception)
+        ]
+        for (document_key, item), exc in failed_pairs:
+            logger.error(
+                "[compliance] %s(%s) 검증 실패: %s",
+                document_key,
+                item.section_type,
+                exc,
+            )
         valid_pairs = [
             (di, r) for di, r in zip(detection_inputs, raw_reports)
             if not isinstance(r, Exception)
@@ -441,9 +452,29 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             for (document_key, _), report in zip(detection_inputs, reports)
             for v in report.violations
         ]
+        violations.extend(
+            {
+                "violation_id": f"{document_key}:VIO_DOC_VALIDATION_FAIL",
+                "document_type": document_key,
+                "type": "MISSING_REQUIREMENT",
+                "severity": "HIGH",
+                "original_text": "",
+                "regulation": "검증 시스템 운영 점검 필요",
+                "reason": (
+                    f"{item.section_type} 문서 compliance 검증이 완료되지 않았습니다. "
+                    "다른 문서 검증 결과는 보존했으며 해당 문서는 수동 검토가 필요합니다."
+                ),
+                "manual_flag": True,
+            }
+            for (document_key, item), _ in failed_pairs
+        )
         status = (
             "PASS"
-            if reports and all(r.status == "COMPLIANCE_PASSED" for r in reports)
+            if (
+                reports
+                and not failed_pairs
+                and all(r.status == "COMPLIANCE_PASSED" for r in reports)
+            )
             else "FAIL"
         )
         document_scores = {
@@ -455,6 +486,16 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             }
             for (document_key, item), report in zip(detection_inputs, reports)
         }
+        document_scores.update({
+            document_key: {
+                "section_type": item.section_type,
+                "status": "ERROR",
+                "compliance_score": 0.0,
+                "compliance_score_pct": 0.0,
+                "error": str(exc),
+            }
+            for (document_key, item), exc in failed_pairs
+        })
         total_length = sum(len(item.content) for _, item in detection_inputs)
         if total_length:
             compliance_score = sum(
@@ -466,7 +507,9 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
         risk_summary = risk_result.get("summary", {})
 
         next_actions = [report.next_action for report in reports if report.next_action]
-        if any(a.startswith("GENERATOR_FAILURE") for a in next_actions):
+        if failed_pairs:
+            compliance_next_action = "MANUAL_REVIEW_REQUIRED"
+        elif any(a.startswith("GENERATOR_FAILURE") for a in next_actions):
             compliance_next_action = "GENERATOR_FAILURE"
         elif "MANUAL_REVIEW_REQUIRED" in next_actions:
             compliance_next_action = "MANUAL_REVIEW_REQUIRED"

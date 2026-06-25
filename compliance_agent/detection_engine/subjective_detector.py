@@ -334,7 +334,7 @@ class SubjectiveDetector:
         self._llm_cache: dict[str, object] = {}
 
     def _get_llm(self, model_override: str | None):
-        key = model_override or "__upstage_fallback__"
+        key = model_override or "__default_compliance_llm__"
         if key not in self._llm_cache:
             factory = self._llm_factory or get_compliance_llm
             self._llm_cache[key] = factory(model_override)

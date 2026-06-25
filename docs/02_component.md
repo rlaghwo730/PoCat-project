@@ -25,7 +25,7 @@
 │  LangGraph 워크플로우  (graph/builder.py + nodes.py)           │
 │  coordinator → planner → supervisor(허브)                       │
 │    supervisor → generation → compliance → edit                  │
-│    edit → final_validation → supervisor → END                   │
+│    edit → supervisor → final_validation → supervisor → END      │
 └──┬──────────┬──────────────────────────────────────────────────┘
    │          │
    │     ┌────▼──────────────────────────────────────────────┐
@@ -185,6 +185,11 @@ revise        → supervisor
 
 **주요 파일**: `compliance_agent/compliance_agent.py`, `compliance_agent/detection_engine/violation_detector.py`
 
+**LLM 선택 로직**
+- `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY` 있음 → Gemini (`GEMINI_COMPLIANCE_MODEL`, 기본 `gemini-3.5-flash`)
+- Gemini 키가 없고 `OPENROUTER_API_KEY` + `model_override` 있음 → OpenRouter 모델
+- 그 외 `UPSTAGE_API_KEY` 있음 → ChatUpstage(solar-pro)
+
 **아키텍처**
 
 ```
@@ -269,7 +274,7 @@ return (
 | `supervisor` | `openai/gpt-oss-120b:free` |
 | `generation` | `qwen/qwen3-235b-a22b:free` |
 | `edit` | `qwen/qwen-2.5-72b-instruct:free` |
-| `compliance` | `nousresearch/hermes-3-llama-3.1-405b:free` |
+| `compliance` | `meta-llama/llama-3.3-70b-instruct:free` |
 
 ---
 

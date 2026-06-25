@@ -12,7 +12,7 @@
 |------|------|
 | **보험사 담당자** | 약관 생성 요청을 발행하고 결과를 검토하는 1차 사용자. Streamlit UI를 통해 상품 조건 입력 |
 | **AI 에이전트 시스템** | LangGraph 워크플로우 상의 7개 노드(coordinator/planner/supervisor/generation/compliance/edit/final_validation). 각 노드가 독립적인 에이전트 역할을 수행 |
-| **외부 LLM (OpenRouter)** | 노드별 모델 사용 — basic/reasoning: `meta-llama/llama-3.2-3b-instruct:free`, supervisor: `openai/gpt-oss-120b:free`, generation: `qwen/qwen3-235b-a22b:free`, edit: `qwen/qwen-2.5-72b-instruct:free`, compliance: `nousresearch/hermes-3-llama-3.1-405b:free`. Upstage Solar-Pro가 폴백(fallback)으로 등록됨 |
+| **외부 LLM** | 생성·편집·슈퍼바이저는 OpenRouter 모델을 사용하고 Upstage Solar-Pro를 폴백으로 등록한다. Compliance Agent는 `GEMINI_API_KEY`가 있으면 Gemini(`gemini-3.5-flash`)를 우선 사용하며, Gemini 키가 없을 때 OpenRouter/Upstage 경로를 사용한다. |
 | **ChromaDB (RAG)** | 삼성화재·현대해상·DB손해보험 실제 약관·상품설명서·사업방법서 벡터 저장소 |
 | **pgvector DB** | `unified_retrieval_chunk` 등 법률/보험업감독규정 텍스트 저장소 |
 | **Langfuse** | LLM 호출 트레이싱 및 관찰성 수집 외부 서비스 |
@@ -40,7 +40,8 @@
 
 **사전 조건**
 - `coverage_conditions.basic_coverage_items`에 하나 이상의 보장 종목이 포함되어 있어야 함
-- `OPENROUTER_API_KEY` 또는 `UPSTAGE_API_KEY` 환경 변수 설정됨
+- 생성 워크플로우용 `OPENROUTER_API_KEY` 또는 `UPSTAGE_API_KEY` 환경 변수 설정됨
+- compliance LLM 사용 시 `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY` 환경 변수 설정 가능
 - 또는 `user_document` 필드에 사용자 작성 약관 전문 제공 (검증·수정 모드)
 
 **기본 흐름**
@@ -129,7 +130,8 @@
    - 상품설명서: ChromaDB 검색 + 회사별 형식 지침 + LLM 생성
    - 사업방법서: ChromaDB 검색 + 회사별 21/16/18개 항목 지침 + LLM 생성
 4. 결과를 `product_description`, `business_method`에 저장
-5. edit 노드 완료 → `final_validation` 노드로 직행 (direct edge)
+5. edit 노드 완료 → supervisor로 귀환
+6. supervisor가 edit 이후 상태를 확인해 compliance 재검증 또는 `final_validation` 진입을 결정
 
 **예외 흐름**
 - E1: violations 없음 → `final_content = draft_content` (수정 없이 통과)

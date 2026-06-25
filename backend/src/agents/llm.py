@@ -12,7 +12,7 @@ _MODEL_MAP = {
     "reasoning":   "meta-llama/llama-3.2-3b-instruct:free",
     "supervisor":  "openai/gpt-oss-120b:free",
     "generation":  "qwen/qwen3-235b-a22b:free",
-    "compliance":  "nousresearch/hermes-3-llama-3.1-405b:free",
+    "compliance":  "meta-llama/llama-3.3-70b-instruct:free",
     "edit":        "qwen/qwen-2.5-72b-instruct:free",
 }
 

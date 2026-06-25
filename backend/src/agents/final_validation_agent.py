@@ -4,10 +4,9 @@
 위반 항목을 입력받아, 제출 가능 여부를 JSON으로 판정한다.
 
 설계 메모:
-  - 아직 LangGraph builder.py 에는 연결하지 않은 독립 모듈이다.
-  - 추후 nodes.py 에서 final_validation_node 가 본 모듈의
-    run_final_validation() 또는 FinalValidationAgent.validate() 를
-    그대로 호출할 수 있도록 입력(State 유사 dict) / 출력(dict) 구조를 맞췄다.
+  - LangGraph final_validation_node 에서 arun_final_validation()을 호출한다.
+  - 입력(State 유사 dict) / 출력(dict) 구조는 그래프 노드와 단독 실행 양쪽에서
+    재사용할 수 있도록 유지한다.
   - llm.py 의 get_llm_by_type() 스타일을 따르되, 외부 .env / API key 에
     의존하지 않도록 LLM 객체를 호출 측에서 '주입'하는 구조로 작성했다.
     (llm 인자를 주지 않으면 LLM 없이 규칙 기반 검증만 수행한다.)

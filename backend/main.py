@@ -23,10 +23,18 @@ logger = logging.getLogger(__name__)
 
 def _print_startup_info() -> None:
     """사용 중인 LLM 공급자와 DB 연결 여부를 출력"""
+    compliance_llm_info = (
+        f"Gemini ({os.getenv('GEMINI_COMPLIANCE_MODEL', 'gemini-3.5-flash')})"
+        if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        else "공용 LLM 설정 사용"
+    )
+
     if os.getenv("OPENROUTER_API_KEY"):
         llm_info = "OpenRouter (basic=Llama-3.1-8B / supervisor=GPT-4o)"
     elif os.getenv("UPSTAGE_API_KEY"):
         llm_info = "Upstage Solar Pro"
+    elif os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        llm_info = "Gemini compliance only"
     else:
         llm_info = "Ollama 로컬 (qwen2.5:14b)"
 
@@ -35,6 +43,7 @@ def _print_startup_info() -> None:
     logger.info("=" * 60)
     logger.info("PoCat API v2.0  [LangManus 아키텍처]")
     logger.info("LLM  : %s", llm_info)
+    logger.info("Compliance LLM: %s", compliance_llm_info)
     logger.info("DB   : %s", db_info)
     logger.info("=" * 60)
 

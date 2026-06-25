@@ -70,6 +70,34 @@ def test_compliance_node_문서별점수와종합백분율(monkeypatch):
     assert all(item.langfuse_callbacks == [callback] for item in seen_inputs)
 
 
+def test_compliance_node_문서일부실패시_나머지결과와수동검토를_보존(monkeypatch):
+    class FakeAgent:
+        async def validate_async(self, item):
+            if item.section_type == "상품설명서":
+                raise RuntimeError("product description validation failed")
+            return ComplianceReport(
+                status="COMPLIANCE_PASSED",
+                iteration=item.iteration,
+                compliance_score=1.0,
+                next_action="READY_FOR_DELIVERY",
+            )
+
+    monkeypatch.setattr(nodes, "_get_compliance_agent", lambda: FakeAgent())
+
+    result = asyncio.run(nodes.compliance_node(_state()))
+
+    assert result["status"] == "FAIL"
+    assert result["compliance_next_action"] == "MANUAL_REVIEW_REQUIRED"
+    assert result["document_compliance_scores"]["terms"]["status"] == "COMPLIANCE_PASSED"
+    assert result["document_compliance_scores"]["business_method"]["status"] == "COMPLIANCE_PASSED"
+    assert result["document_compliance_scores"]["product_description"]["status"] == "ERROR"
+    assert any(
+        v["violation_id"] == "product_description:VIO_DOC_VALIDATION_FAIL"
+        and v["manual_flag"] is True
+        for v in result["violations"]
+    )
+
+
 def test_initial_state에_langfuse_callback을_보존():
     callback = object()
     state = _initial_state({"document_request": {}}, [callback])
@@ -89,7 +117,7 @@ def test_supervisor_최종검증실패는수동검토종료(monkeypatch):
         compliance_next_action="REGENERATE",
     )
     result = asyncio.run(nodes.supervisor_node(state))
-    assert result["next_step"] == "end"
+    assert result["next_step"] == "final_validation"
     assert result["status"] == "MANUAL_REVIEW_REQUIRED"
 
 
