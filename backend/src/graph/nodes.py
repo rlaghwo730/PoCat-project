@@ -192,9 +192,9 @@ async def supervisor_node(state: State, model_override: Optional[str] = None) ->
         edit_iteration = state.get("edit_iteration", 0)
 
         if state.get("post_edit_compliance_done", False):
-            # 90% 이상 달성 → final_validation
+            # 80% 이상 달성 → final_validation
             next_step = "final_validation"
-            situation = f"정확도 {current_accuracy}% ≥ 90% → final_validation으로 넘어갑니다."
+            situation = f"정확도 {current_accuracy}% ≥ 80% → final_validation으로 넘어갑니다."
         elif status == "PASS":
             next_step = "edit"
             situation = "법규 준수 확인. edit 노드에서 3종 문서를 생성합니다."
@@ -554,8 +554,8 @@ async def compliance_node(state: State, model_override: Optional[str] = None) ->
             "step_type":      "edit_review" if is_post_edit else "generation",
             "edit_iteration": state.get("edit_iteration", 0),
         }]
-        # 90% 이상이거나 위반 0건일 때만 최종 완료
-        post_edit_done = is_post_edit and (accuracy >= 90.0 or len(violations) == 0)
+        # 80% 이상이거나 위반 0건일 때만 최종 완료
+        post_edit_done = is_post_edit and (accuracy >= 80.0 or len(violations) == 0)
         # ── A2A: compliance → supervisor (검증 결과 보고, 다음 분기는 supervisor가 결정) ──
         a2a_msg = create_a2a_message(
             sender="compliance", receiver="supervisor",
